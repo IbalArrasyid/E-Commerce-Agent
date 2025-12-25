@@ -171,7 +171,7 @@ export async function callAgent(client: MongoClient, query: string, thread_id: s
 
     // Initialize the AI model (Google's Gemini)
     const model = new ChatGoogleGenerativeAI({
-      model: "gemini-2.5-flash",         //  Use Gemini 1.5 Flash model
+      model: "gemini-2.5-flash",         //  Use Gemini 2.5 Flash model
       temperature: 0,                    // Deterministic responses (no randomness)
       maxRetries: 0,                     // Disable built-in retries (we handle our own)
       apiKey: process.env.GOOGLE_API_KEY, // Google API key from environment
