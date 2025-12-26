@@ -46,8 +46,15 @@ async function startServer() {
       try {
         // Call our AI agent with the message and new thread ID
         const response = await callAgent(client, initialMessage, threadId)
-        // Send successful response with thread ID and AI response
-        res.json({ threadId, response })
+        if (typeof response === 'string') {
+          res.json({ threadId, response: response })
+        } else {
+          res.json({ 
+            threadId, 
+            response: response.response,
+            products: response.products || []
+          })
+        }
       } catch (error) {
         // Log any errors that occur during agent execution
         console.error('Error starting conversation:', error)
@@ -65,8 +72,14 @@ async function startServer() {
       try {
         // Call AI agent with message and existing thread ID (continues conversation)
         const response = await callAgent(client, message, threadId)
-        // Send AI response (no need to send threadId again since it's continuing)
-        res.json({ response })
+        if (typeof response === 'string') {
+          res.json({ response: response })
+        } else {
+          res.json({ 
+            response: response.response,
+            products: response.products || []
+          })
+        }
       } catch (error) {
         // Log any errors that occur during agent execution
         console.error('Error in chat:', error)

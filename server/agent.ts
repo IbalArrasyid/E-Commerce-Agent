@@ -16,6 +16,29 @@ import { MongoClient } from "mongodb"                          // MongoDB databa
 import { z } from "zod"                                        // Schema validation library
 import "dotenv/config"                                         // Load environment variables from .env file
 
+// Function to parse product recommendations from AI response and search results
+function extractProductsFromTool(searchResults: any) {
+  if (!searchResults || !searchResults.results) return { hasProducts: false, products: [] }
+
+  const products = searchResults.results
+    .map((item: any) => {
+      const data = item[0]?.metadata || item.metadata || item
+      return {
+        item_id: data.item_id,
+        item_name: data.item_name,
+        item_description: data.ai_generated?.description || data.item_description,
+        brand: data.brand,
+        prices: data.prices,
+        user_reviews: data.user_reviews,
+        categories: data.categories,
+        images: data.images || []
+      }
+    })
+    .slice(0, 5)
+
+  return { hasProducts: products.length > 0, products }
+}
+
 // Utility function to handle API rate limits with exponential backoff
 async function retryWithBackoff<T>(
   fn: () => Promise<T>,    // The function to retry (generic type T for return value)
@@ -200,10 +223,52 @@ export async function callAgent(client: MongoClient, query: string, thread_id: s
 
 IMPORTANT: You have access to an item_lookup tool that searches the furniture inventory database. ALWAYS use this tool when customers ask about furniture items, even if the tool returns errors or empty results.
 
-When using the item_lookup tool:
-- If it returns results, provide helpful details about the furniture items
-- If it returns an error or no results, acknowledge this and offer to help in other ways
-- If the database appears to be empty, let the customer know that inventory might be being updated
+LANGUAGE RULES:
+- If the user's message is in Indonesian, respond fully in Indonesian.
+- If the user's message is in English, respond in English.
+- Use clear, natural, and friendly language.
+- Avoid markdown symbols such as **, ##, or bullet styling.
+- Use numbered lists (1. 2. 3.) for product recommendations.
+
+TOOL USAGE (MANDATORY):
+- You MUST always use the item_lookup tool when the user asks about furniture, products, prices, or recommendations.
+- NEVER recommend products without calling the tool first.
+- ONLY use products returned by the tool.
+- DO NOT invent or assume products.
+
+PRODUCT RULES:
+- When a user asks for a category (e.g. sofa, kursi, meja):
+  - Recommend 3–5 products from the SAME category.
+  - The order of products in the text MUST match the carousel order exactly.
+- Each recommended product must exist in the database.
+
+RESPONSE FORMAT (VERY IMPORTANT):
+When products are found, ALWAYS use this structure:
+
+Berikut beberapa rekomendasi yang bisa Anda pertimbangkan:
+
+1. Nama Produk – Brand
+   Deskripsi singkat (1 kalimat, ringkas dan informatif).
+   Harga: Rp harga_diskon (harga normal Rp harga_awal)
+
+2. Nama Produk – Brand
+   Deskripsi singkat.
+   Harga: Rp harga_diskon (harga normal Rp harga_awal)
+
+(Repeat for 3–5 products)
+
+End the response with ONE short follow-up question, for example:
+- Apakah Anda mencari ukuran atau model tertentu?
+- Ingin sofa untuk ruang tamu atau ruang keluarga?
+
+CAROUSEL ALIGNMENT RULE:
+- The carousel must display the SAME products shown in the text.
+- Do NOT mention products in text that are not included in the carousel.
+
+IF NO PRODUCTS ARE FOUND:
+- Politely inform the user that no products were found.
+- Suggest refining the request (category, room type, size, or budget).
+- Do NOT recommend alternative products unless the user agrees.
 
 Current time: {time}`,
           ],
@@ -248,10 +313,43 @@ Current time: {time}`,
     )
 
     // Extract the final response from the conversation
-    const response = finalState.messages[finalState.messages.length - 1].content
-    console.log("Agent response:", response)
+        const responseMessage = finalState.messages[finalState.messages.length - 1] as AIMessage
+        const responseText = typeof responseMessage.content === 'string' 
+          ? responseMessage.content 
+          : JSON.stringify(responseMessage.content)
+        console.log("Agent response:", responseText)
 
-    return response // Return the AI's final response
+        // Check if there were tool executions with product data
+        let searchResults = null;
+        for (let i = finalState.messages.length - 1; i >= 0; i--) {
+          const msg = finalState.messages[i] as AIMessage;
+          if (msg.tool_calls && msg.tool_calls.length > 0) {
+            const toolResultMsg = finalState.messages[i + 1];
+            if (toolResultMsg && toolResultMsg.content) {
+              try {
+                const contentStr = typeof toolResultMsg.content === 'string' 
+                  ? toolResultMsg.content 
+                  : JSON.stringify(toolResultMsg.content);
+                searchResults = JSON.parse(contentStr);
+                break;
+              } catch (e) {
+                console.error("Error parsing tool result:", e);
+              }
+            }
+          }
+        }
+        
+        // Parse and format product recommendations
+        const productData = extractProductsFromTool(searchResults);
+        
+        console.log("Has products:", productData.hasProducts)
+      
+        return {
+          response: responseText,
+          products: productData.products
+        };
+        
+    
 
   } catch (error: any) {
     // Handle different types of errors with user-friendly messages
