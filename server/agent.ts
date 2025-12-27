@@ -1,6 +1,6 @@
 // Import required modules from LangChain ecosystem
 import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai" // For creating vector embeddings from text using Gemini
-import { ChatGoogleGenerativeAI } from "@langchain/google-genai" // Google's Gemini AI model
+import { ChatOpenAI } from "@langchain/openai"                     // OpenAI chat model integration
 import { AIMessage, BaseMessage, HumanMessage } from "@langchain/core/messages" // Message types for conversations
 import {
   ChatPromptTemplate,      // For creating structured prompts with placeholders
@@ -64,11 +64,88 @@ async function retryWithBackoff<T>(
   throw new Error("Max retries exceeded") // This should never be reached
 }
 
+async function reformulateQuery(originalQuery: string) {
+  const reformulator = new ChatOpenAI({
+    apiKey: process.env.GROQ_API_KEY,
+    model: "llama-3.1-8b-instant",
+    temperature: 0,
+    configuration: {
+      baseURL: "https://api.groq.com/openai/v1",
+    },
+  })
+
+  const prompt = ChatPromptTemplate.fromMessages([
+  [
+    "system",
+    `TASK: Query rewriting ONLY.
+
+    You are NOT a chatbot.
+    You are NOT allowed to answer questions.
+    You ONLY rewrite the user query.
+
+    RULES (STRICT):
+    - Rewrite the query into a short, explicit search query.
+    - Keep the original intent EXACTLY.
+    - DO NOT answer the question.
+    - DO NOT add opinions.
+    - DO NOT change meaning.
+    - Output ONLY the rewritten query.
+    - NO punctuation at the end.
+    - NO explanations.
+    - NO extra words.
+
+    BAD EXAMPLES:
+    User: "Do you have dining tables?"
+    Wrong: "Yes, we have dining tables."
+    Wrong: "I have dining tables available."
+    Wrong: "Saya memiliki meja makan."
+
+    GOOD EXAMPLES:
+    User: "Do you have dining tables?"
+    Output: "dining table furniture"
+
+    User: "Meja makan kayu minimalis"
+    Output: "meja makan kayu minimalis"
+
+    If you violate the rules, your output is invalid.`
+      ],
+      ["human", "{query}"]
+    ])
+
+  const formatted = await prompt.formatMessages({
+    query: originalQuery,
+  })
+
+  const result = await reformulator.invoke(formatted)
+
+    // return typeof result.content === "string"
+    //   ? result.content.trim()
+    //   : originalQuery
+
+  const text =
+    typeof result.content === "string"
+      ? result.content.trim()
+      : originalQuery
+
+  // Guardrail: kalau masih berbentuk kalimat jawaban
+  if (
+    text.toLowerCase().startsWith("saya") ||
+    text.toLowerCase().startsWith("i ") ||
+    text.endsWith("?") ||
+    text.length > originalQuery.length * 2
+  ) {
+    return originalQuery
+  }
+
+  return text
+}
+
+
 // Main function that creates and runs the AI agent
 export async function callAgent(client: MongoClient, query: string, thread_id: string) {
   try {
     // Database configuration
-    const dbName = "inventory_database"        // Name of the MongoDB database
+    const dbName = "admin_db"        // Name of the MongoDB database
     const db = client.db(dbName)              // Get database instance
     const collection = db.collection("items") // Get the 'items' collection
 
@@ -193,12 +270,14 @@ export async function callAgent(client: MongoClient, query: string, thread_id: s
     const toolNode = new ToolNode<typeof GraphState.State>(tools)
 
     // Initialize the AI model (Google's Gemini)
-    const model = new ChatGoogleGenerativeAI({
-      model: "gemini-2.5-flash",         //  Use Gemini 2.5 Flash model
-      temperature: 0,                    // Deterministic responses (no randomness)
-      maxRetries: 0,                     // Disable built-in retries (we handle our own)
-      apiKey: process.env.GOOGLE_API_KEY, // Google API key from environment
-    }).bindTools(tools)                  // Bind our custom tools to the model
+    const model = new ChatOpenAI({
+      apiKey: process.env.GROQ_API_KEY,
+      model: "llama-3.1-8b-instant",
+      temperature: 0,
+      configuration: {
+        baseURL: "https://api.groq.com/openai/v1",
+      },
+    }).bindTools(tools)
 
     // Decision function: determines next step in the workflow
     function shouldContinue(state: typeof GraphState.State) {
@@ -219,7 +298,7 @@ export async function callAgent(client: MongoClient, query: string, thread_id: s
         const prompt = ChatPromptTemplate.fromMessages([
           [
             "system", // System message defines the AI's role and behavior
-            `You are a helpful E-commerce Chatbot Agent for a furniture store. 
+            `You are a helpful E-commerce Sales Agent for a Home Furnishing & Furniture store. 
 
 IMPORTANT: You have access to an item_lookup tool that searches the furniture inventory database. ALWAYS use this tool when customers ask about furniture items, even if the tool returns errors or empty results.
 
@@ -302,13 +381,18 @@ Current time: {time}`,
     const app = workflow.compile({ checkpointer })
 
     // Execute the workflow
+    const rewrittenQuery = await reformulateQuery(query)
+
+    console.log("Original query:", query)
+    console.log("Reformulated query:", rewrittenQuery)
+
     const finalState = await app.invoke(
       {
-        messages: [new HumanMessage(query)], // Start with user's question
+        messages: [new HumanMessage(rewrittenQuery)],
       },
       { 
-        recursionLimit: 15,                   // Prevent infinite loops
-        configurable: { thread_id: thread_id } // Conversation thread identifier
+        recursionLimit: 15,
+        configurable: { thread_id: thread_id }
       }
     )
 
