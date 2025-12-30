@@ -16,11 +16,77 @@ import { MongoClient } from "mongodb"                          // MongoDB databa
 import { z } from "zod"                                        // Schema validation library
 import "dotenv/config"                                         // Load environment variables from .env file
 
-// Function to parse product recommendations from AI response and search results
-function extractProductsFromTool(searchResults: any) {
-  if (!searchResults || !searchResults.results) return { hasProducts: false, products: [] }
+// ============================================================================
+// TYPE DEFINITIONS
+// ============================================================================
 
-  const products = searchResults.results
+/**
+ * Represents price information for a product variant
+ */
+export interface ProductPrice {
+  variant?: string
+  price: number
+  currency?: string
+}
+
+/**
+ * Represents a single product item from the inventory
+ */
+export interface ProductItem {
+  item_id: string
+  item_name: string
+  item_description: string
+  brand: string
+  prices: ProductPrice[]
+  user_reviews?: {
+    rating?: number
+    count?: number
+  }
+  categories: string[]
+  images: string[]
+}
+
+/**
+ * Represents the structured agent response with separated text and products
+ */
+export interface AgentResponse {
+  // Opening/conversational text from the AI
+  intro: string
+  // Product recommendations extracted from the search results (single source of truth)
+  products: ProductItem[]
+  // Follow-up question from the AI
+  followUp: string
+  // Metadata about the response
+  meta?: {
+    hasProducts: boolean
+    searchType?: "vector" | "text" | "none"
+    productCount: number
+  }
+}
+
+/**
+ * Represents the raw search results from the item lookup tool
+ */
+interface SearchResults {
+  results?: Array<[any, number] | any>
+  searchType?: string
+  query?: string
+  count?: number
+  error?: string
+  message?: string
+}
+
+// Function to parse product recommendations from AI response and search results
+function extractProductsFromTool(searchResults: SearchResults | null): {
+  hasProducts: boolean
+  products: ProductItem[]
+  searchType?: "vector" | "text" | "none"
+} {
+  if (!searchResults || !searchResults.results) {
+    return { hasProducts: false, products: [], searchType: "none" }
+  }
+
+  const products: ProductItem[] = searchResults.results
     .map((item: any) => {
       const data = item[0]?.metadata || item.metadata || item
       return {
@@ -36,7 +102,9 @@ function extractProductsFromTool(searchResults: any) {
     })
     .slice(0, 5)
 
-  return { hasProducts: products.length > 0, products }
+  const searchType: "vector" | "text" = searchResults.searchType === "vector" ? "vector" : "text"
+
+  return { hasProducts: products.length > 0, products, searchType }
 }
 
 // Utility function to handle API rate limits with exponential backoff
@@ -67,7 +135,7 @@ async function retryWithBackoff<T>(
 async function reformulateQuery(originalQuery: string) {
   const reformulator = new ChatOpenAI({
     apiKey: process.env.GROQ_API_KEY,
-    model: "llama-3.1-8b-instant",
+    model: "openai/gpt-oss-120b",
     temperature: 0,
     configuration: {
       baseURL: "https://api.groq.com/openai/v1",
@@ -142,7 +210,11 @@ async function reformulateQuery(originalQuery: string) {
 
 
 // Main function that creates and runs the AI agent
-export async function callAgent(client: MongoClient, query: string, thread_id: string) {
+export async function callAgent(
+  client: MongoClient,
+  query: string,
+  thread_id: string
+): Promise<AgentResponse> {
   try {
     // Database configuration
     const dbName = "admin_db"        // Name of the MongoDB database
@@ -272,7 +344,7 @@ export async function callAgent(client: MongoClient, query: string, thread_id: s
     // Initialize the AI model (Google's Gemini)
     const model = new ChatOpenAI({
       apiKey: process.env.GROQ_API_KEY,
-      model: "llama-3.1-8b-instant",
+      model: "openai/gpt-oss-120b",
       temperature: 0,
       configuration: {
         baseURL: "https://api.groq.com/openai/v1",
@@ -298,7 +370,7 @@ export async function callAgent(client: MongoClient, query: string, thread_id: s
         const prompt = ChatPromptTemplate.fromMessages([
           [
             "system", // System message defines the AI's role and behavior
-            `You are a helpful E-commerce Sales Agent for a Home Furnishing & Furniture store. 
+            `You are a helpful E-commerce Sales Agent for a Home Furnishing & Furniture store.
 
 IMPORTANT: You have access to an item_lookup tool that searches the furniture inventory database. ALWAYS use this tool when customers ask about furniture items, even if the tool returns errors or empty results.
 
@@ -306,8 +378,6 @@ LANGUAGE RULES:
 - If the user's message is in Indonesian, respond fully in Indonesian.
 - If the user's message is in English, respond in English.
 - Use clear, natural, and friendly language.
-- Avoid markdown symbols such as **, ##, or bullet styling.
-- Use numbered lists (1. 2. 3.) for product recommendations.
 
 TOOL USAGE (MANDATORY):
 - You MUST always use the item_lookup tool when the user asks about furniture, products, prices, or recommendations.
@@ -318,36 +388,32 @@ TOOL USAGE (MANDATORY):
 PRODUCT RULES:
 - When a user asks for a category (e.g. sofa, kursi, meja):
   - Recommend 3–5 products from the SAME category.
-  - The order of products in the text MUST match the carousel order exactly.
+  - The order of products in the array MUST match the tool results order exactly.
 - Each recommended product must exist in the database.
 
-RESPONSE FORMAT (VERY IMPORTANT):
-When products are found, ALWAYS use this structure:
+RESPONSE FORMAT (STRICT – MUST FOLLOW):
 
-Berikut beberapa rekomendasi yang bisa Anda pertimbangkan:
+You MUST return a VALID JSON object and NOTHING ELSE.
 
-1. Nama Produk – Brand
-   Deskripsi singkat (1 kalimat, ringkas dan informatif).
-   Harga: Rp harga_diskon (harga normal Rp harga_awal)
+Return exactly this JSON structure:
+- intro: your opening message to the user
+- products: array of product objects with item_id, name, brand, description, price, original_price
+- follow_up: one short follow-up question
 
-2. Nama Produk – Brand
-   Deskripsi singkat.
-   Harga: Rp harga_diskon (harga normal Rp harga_awal)
+Example JSON format (you must output valid JSON):
+{{"intro": "Your message here", "products": [], "follow_up": "Your question?"}}
 
-(Repeat for 3–5 products)
-
-End the response with ONE short follow-up question, for example:
-- Apakah Anda mencari ukuran atau model tertentu?
-- Ingin sofa untuk ruang tamu atau ruang keluarga?
-
-CAROUSEL ALIGNMENT RULE:
-- The carousel must display the SAME products shown in the text.
-- Do NOT mention products in text that are not included in the carousel.
+Rules:
+- Do NOT include markdown
+- Do NOT include explanations
+- Do NOT include text outside JSON
+- products MUST match the tool results order exactly
+- follow_up must be ONE short question
 
 IF NO PRODUCTS ARE FOUND:
-- Politely inform the user that no products were found.
-- Suggest refining the request (category, room type, size, or budget).
-- Do NOT recommend alternative products unless the user agrees.
+- Politely inform the user that no products were found in the intro field.
+- Set products to empty array [].
+- Suggest refining the request in the follow_up field.
 
 Current time: {time}`,
           ],
@@ -397,14 +463,28 @@ Current time: {time}`,
     )
 
     // Extract the final response from the conversation
-        const responseMessage = finalState.messages[finalState.messages.length - 1] as AIMessage
-        const responseText = typeof responseMessage.content === 'string' 
-          ? responseMessage.content 
-          : JSON.stringify(responseMessage.content)
-        console.log("Agent response:", responseText)
+    const responseMessage = finalState.messages[finalState.messages.length - 1] as AIMessage
+
+    // Parse AI structured JSON response
+    let aiStructuredResponse: {
+      intro: string
+      products: any[]
+      follow_up: string
+    }
+
+    try {
+      aiStructuredResponse =
+        typeof responseMessage.content === "string"
+          ? JSON.parse(responseMessage.content)
+          : responseMessage.content
+    } catch (e) {
+      throw new Error("AI response is not valid JSON")
+    }
+
+    console.log("AI structured response:", aiStructuredResponse)
 
         // Check if there were tool executions with product data
-        let searchResults = null;
+        let searchResults: SearchResults | null = null;
         for (let i = finalState.messages.length - 1; i >= 0; i--) {
           const msg = finalState.messages[i] as AIMessage;
           if (msg.tool_calls && msg.tool_calls.length > 0) {
@@ -423,15 +503,22 @@ Current time: {time}`,
           }
         }
         
-        // Parse and format product recommendations
-        const productData = extractProductsFromTool(searchResults);
-        
-        console.log("Has products:", productData.hasProducts)
-      
-        return {
-          response: responseText,
-          products: productData.products
-        };
+    // Parse and format product recommendations from tool results (single source of truth)
+    const productData = extractProductsFromTool(searchResults)
+
+    console.log("Has products:", productData.hasProducts)
+
+    // Return structured AgentResponse
+    return {
+      intro: aiStructuredResponse.intro,
+      products: productData.products, // from tool (single source of truth)
+      followUp: aiStructuredResponse.follow_up,
+      meta: {
+        hasProducts: productData.hasProducts,
+        searchType: productData.searchType,
+        productCount: productData.products.length
+      }
+    }
         
     
 
