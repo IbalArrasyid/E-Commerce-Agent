@@ -5,7 +5,10 @@ import express, { Express, Request, Response } from "express"
 // Import MongoDB client for database connection
 import { MongoClient } from "mongodb"
 // Import our custom AI agent function
-import { callAgent } from './agent'
+// OLD: LangGraph-based agent
+// import { callAgent } from './agent'
+// NEW: Hybrid AI + Logic agent
+import { callAgent, getStateSummary, resetConversation } from './agent-hybrid'
 
 // Create Express application instance
 const app: Express = express()
@@ -32,7 +35,21 @@ async function startServer() {
     // Define root endpoint (GET /) - simple health check
     app.get('/', (req: Request, res: Response) => {
       // Send simple response to confirm server is running
-      res.send('LangGraph Agent Server')
+      res.send('Hybrid Chat Agent Server (AI + Deterministic Logic)')
+    })
+
+    // Debug endpoint - get conversation state (GET /chat/:threadId/state)
+    app.get('/chat/:threadId/state', (req: Request, res: Response) => {
+      const { threadId } = req.params
+      const stateSummary = getStateSummary(threadId)
+      res.json({ threadId, state: stateSummary })
+    })
+
+    // Reset conversation endpoint (DELETE /chat/:threadId)
+    app.delete('/chat/:threadId', (req: Request, res: Response) => {
+      const { threadId } = req.params
+      resetConversation(threadId)
+      res.json({ message: 'Conversation reset', threadId })
     })
 
     // Define endpoint for starting new conversations (POST /chat)
