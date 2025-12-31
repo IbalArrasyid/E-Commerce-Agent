@@ -17,17 +17,12 @@ import { z } from "zod"
 // OUTPUT SCHEMA (Structured Output)
 // ============================================================================
 
-<<<<<<< HEAD
 // Catatan: OpenAI/Groq structured output API TIDAK mendukung .optional()
 // Semua field harus REQUIRED atau nullable. Kita gunakan nullable untuk optional.
 // Setelah parsing, kita convert null → undefined.
 
 export const IntentSchema = z.object({
   // Intent type - apa yang user mau lakukan (REQUIRED)
-=======
-export const IntentSchema = z.object({
-  // Intent type - apa yang user mau lakukan
->>>>>>> 65e9c20049a10c65392dc9f0a9849e4eb60c2622
   intent: z.enum([
     "search",        // Mau cari produk
     "filter_add",    // Nambah filter
@@ -37,7 +32,6 @@ export const IntentSchema = z.object({
     "unknown"        // Tidak jelas
   ]),
 
-<<<<<<< HEAD
   // Search query - nullable untuk optional (REQUIRED tapi boleh null)
   search_query: z.string().nullable(),
 
@@ -77,26 +71,6 @@ export const IntentSchema = z.object({
   }
 
   return result
-=======
-  // Search query - jika user mau cari sesuatu
-  search_query: z.string().optional().describe("Search query if user wants to search"),
-
-  // Filter updates
-  filters: z.object({
-    category: z.string().optional().describe("Product category like sofa, meja, kursi"),
-    color: z.string().optional().describe("Color like putih, hitam, coklat, merah"),
-    material: z.string().optional().describe("Material like kayu, kulit, kain, besi"),
-    price_min: z.number().optional().describe("Minimum price"),
-    price_max: z.number().optional().describe("Maximum price"),
-    brand: z.string().optional().describe("Brand name")
-  }).optional().describe("Filters to add/update"),
-
-  // Language detection
-  language: z.enum(["id", "en"]).describe("Detected language: id for Indonesian, en for English"),
-
-  // Confidence score (optional)
-  confidence: z.number().min(0).max(1).optional().describe("Confidence score 0-1")
->>>>>>> 65e9c20049a10c65392dc9f0a9849e4eb60c2622
 })
 
 export type Intent = z.infer<typeof IntentSchema>
@@ -150,13 +124,8 @@ export class IntentExtractor {
     } catch (error) {
       console.error("Intent extraction error:", error)
 
-<<<<<<< HEAD
       // Fallback: return default intent with context
       return this.fallbackIntent(userMessage, currentContext)
-=======
-      // Fallback: return default intent
-      return this.fallbackIntent(userMessage)
->>>>>>> 65e9c20049a10c65392dc9f0a9849e4eb60c2622
     }
   }
 
@@ -174,18 +143,12 @@ export class IntentExtractor {
 RULES:
 1. Return VALID JSON only
 2. Extract search query if user wants to find products
-<<<<<<< HEAD
 3. IMPORTANT: Handle continuation/elliptical queries - if user only mentions a color, material,
    or attribute without a product name, combine it with the last search query.
    Example: last search was "sofa", user says "putih" → search_query: "sofa putih", color: "putih"
 4. Extract filters: category, color, material, price range, brand
 5. Detect language: "id" for Indonesian, "en" for English
 6. Map common terms:
-=======
-3. Extract filters: category, color, material, price range, brand
-4. Detect language: "id" for Indonesian, "en" for English
-5. Map common terms:
->>>>>>> 65e9c20049a10c65392dc9f0a9849e4eb60c2622
    - sofa, settee, couch → category: "sofa"
    - meja, table → category: "meja"
    - kursi, chair → category: "kursi"
@@ -195,7 +158,6 @@ RULES:
    - kayu, wood → material: "kayu"
    - kulit, leather → material: "kulit"
 
-<<<<<<< HEAD
 CONTINUATION QUERY HANDLING:
 - If message is ONLY a color (e.g., "putih", "merah"), combine with last_query
 - If message is ONLY a material (e.g., "kayu", "kulit"), combine with last_query
@@ -204,17 +166,12 @@ CONTINUATION QUERY HANDLING:
 
 INTENT TYPES:
 - search: User wants to find products (includes continuation queries)
-=======
-INTENT TYPES:
-- search: User wants to find products
->>>>>>> 65e9c20049a10c65392dc9f0a9849e4eb60c2622
 - filter_add: User wants to add/update filter
 - filter_clear: User wants to reset filters
 - greeting: Hi, hello, halo
 - help: User needs help
 - unknown: Cannot determine
 
-<<<<<<< HEAD
 OUTPUT FORMAT (ALL FIELDS REQUIRED, use null for empty):
 {
   "intent": "search" | "filter_add" | "filter_clear" | "greeting" | "help" | "unknown",
@@ -225,20 +182,6 @@ OUTPUT FORMAT (ALL FIELDS REQUIRED, use null for empty):
   "price_min": 0 | null,
   "price_max": 1000000 | null,
   "brand": "IKEA" | null,
-=======
-OUTPUT FORMAT:
-{
-  "intent": "search" | "filter_add" | "filter_clear" | "greeting" | "help" | "unknown",
-  "search_query": "clean search query" | null,
-  "filters": {
-    "category": "sofa" | null,
-    "color": "putih" | null,
-    "material": "kayu" | null,
-    "price_min": 0 | null,
-    "price_max": 1000000 | null,
-    "brand": "IKEA" | null
-  },
->>>>>>> 65e9c20049a10c65392dc9f0a9849e4eb60c2622
   "language": "id" | "en"
 }`
 
@@ -252,12 +195,8 @@ OUTPUT FORMAT:
         prompt += `Active filters: ${JSON.stringify(context.activeFilters)}\n`
       }
       if (context.lastQuery) {
-<<<<<<< HEAD
         prompt += `Last search query: "${context.lastQuery}"\n`
         prompt += `⚠️ If current message is just an attribute (color/material), combine it with this last query!\n`
-=======
-        prompt += `Last search: "${context.lastQuery}"\n`
->>>>>>> 65e9c20049a10c65392dc9f0a9849e4eb60c2622
       }
     }
 
@@ -268,15 +207,11 @@ OUTPUT FORMAT:
    * Fallback ketika LLM gagal.
    * Simple rule-based extraction.
    */
-<<<<<<< HEAD
   private fallbackIntent(message: string, context?: {
     currentCategory?: string
     activeFilters?: Record<string, any>
     lastQuery?: string
   }): Intent {
-=======
-  private fallbackIntent(message: string): Intent {
->>>>>>> 65e9c20049a10c65392dc9f0a9849e4eb60c2622
     const msg = message.toLowerCase()
 
     // Detect language
@@ -294,7 +229,6 @@ OUTPUT FORMAT:
       intent = "filter_clear"
     }
 
-<<<<<<< HEAD
     // Extract filters and search query
     let searchQuery = message
       .replace(/^(saya mau|saya cari|cari|mau|tampil|show|find|looking for|i want|i need|adakah|apa ada)\s*/i, "")
@@ -349,26 +283,12 @@ OUTPUT FORMAT:
 
     if (searchQuery.length === 0) {
       searchQuery = context?.lastQuery || message // fallback
-=======
-    // Extract search query (simple - remove common words)
-    let searchQuery = message
-      .replace(/^(saya mau|saya cari|cari|mau|tampil|show|find|looking for|i want|i need|adakah|apa ada)\s*/i, "")
-      .replace(/^(hai|halo|hello|hi|selamat|pagi|siang|sore|malam)\s*,?\s*/i, "")
-      .trim()
-
-    if (searchQuery.length === 0) {
-      searchQuery = message // fallback
->>>>>>> 65e9c20049a10c65392dc9f0a9849e4eb60c2622
     }
 
     return {
       intent,
       search_query: searchQuery || undefined,
-<<<<<<< HEAD
       filters: Object.keys(filters).length > 0 ? filters as any : undefined,
-=======
-      filters: {},
->>>>>>> 65e9c20049a10c65392dc9f0a9849e4eb60c2622
       language
     }
   }
@@ -378,8 +298,4 @@ OUTPUT FORMAT:
 // EXPORT SINGLETON
 // ============================================================================
 
-<<<<<<< HEAD
 export const intentExtractor = new IntentExtractor()
-=======
-export const intentExtractor = new IntentExtractor()
->>>>>>> 65e9c20049a10c65392dc9f0a9849e4eb60c2622

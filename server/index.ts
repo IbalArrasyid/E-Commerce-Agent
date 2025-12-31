@@ -11,7 +11,6 @@ import { z } from "zod"
 // import { callAgent } from './agent'
 // NEW: Hybrid AI + Logic agent
 import { callAgent, getStateSummary, resetConversation } from './agent-hybrid'
-<<<<<<< HEAD
 
 // ============================================================================
 // REQUEST VALIDATION SCHEMAS
@@ -31,8 +30,6 @@ const ContinueChatRequestSchema = z.object({
 interface ChatRequestBody {
   message: string
 }
-=======
->>>>>>> 65e9c20049a10c65392dc9f0a9849e4eb60c2622
 
 // Create Express application instance
 const app: Express = express()

@@ -108,6 +108,7 @@ export class QueryReformulator {
 
   /**
    * Rule-based reformulation untuk kasus sederhana dan cepat.
+   * Ditingkatkan untuk handle bahasa Indonesia colloquial.
    */
   private ruleBasedReformulate(
     userMessage: string,
@@ -117,113 +118,87 @@ export class QueryReformulator {
     const msg = userMessage.toLowerCase().trim()
     const baseQuery = context.baseQuery.toLowerCase()
 
-    // Daftar filler words yang harus diabaikan saat analisis
-    const fillerWords = ["saya", "mau", "yang", "ada", "adakah", "apa", "boleh", "bisa",
-                        "yang", "warna", "bahannya", "buat", "untuk", "beli", "cari",
-                        "i", "want", "would", "like", "the", "that", "this", "is", "are"]
-
-    // Deteksi keyword yang menandakan pencarian baru
-    const newSearchKeywords = [
-      "cari ", "cariin", "tampil", "show", "find", "looking for",
-      "ada ", "adakah", "apa ada", "is there"
-    ]
-
-    const isNewSearch = newSearchKeywords.some(kw => msg.startsWith(kw))
-
-    // Jika user menyebut kategori produk baru, ini adalah pencarian baru
-    const categories = ["sofa", "meja", "kursi", "lemari", "rak", "buffet", "bed", "kasur",
-                        "couch", "table", "chair", "cabinet", "shelf", "coffee table"]
+    // Daftar kategori produk - NEW SEARCH jika mention kategori berbeda
+    const categories = ["sofa", "settee", "couch", "meja", "table", "kursi", "chair",
+                        "lemari", "cabinet", "rak", "shelf", "buffet", "sideboard",
+                        "bed", "kasur", "mattress", "coffee table", "meja tamu"]
 
     const mentionedCategory = categories.find(cat => msg.includes(cat))
 
     if (mentionedCategory && mentionedCategory !== baseQuery) {
-      // User mention kategori berbeda → new search
+      console.log(`[QueryReformulator] New category: ${mentionedCategory}`)
       return {
-        query: userMessage, // Gunakan pesan asli sebagai query baru
+        query: userMessage,
         isContinuation: false,
         isNewSearch: true,
-        detectedAttributes: {
-          category: mentionedCategory
-        }
+        detectedAttributes: { category: mentionedCategory }
       }
     }
 
-    // Deteksi warna (continuation)
+    // Daftar warna
     const colors = ["putih", "white", "hitam", "black", "coklat", "brown", "merah", "red",
                     "biru", "blue", "hijau", "green", "kuning", "yellow", "abu", "gray",
                     "grey", "cream", "beige", "gold", "emas", "silver", "perak"]
 
     const mentionedColor = colors.find(c => msg.includes(c))
 
-    // Deteksi material (continuation)
+    // Daftar material
     const materials = ["kayu", "wood", "kulit", "leather", "kain", "fabric", "besi", "metal",
                        "rotan", "rattan", "plastik", "plastic", "kaca", "glass", "marmer",
-                       "marble", "velvet", "beludru", "linen", "katun", "canvas"]
+                       "marble", "velvet", "beludru", "linen", "katun"]
 
     const mentionedMaterial = materials.find(m => msg.includes(m))
 
-    // Deteksi price reference (continuation)
+    // Daftar price reference
     const priceRefs = ["murah", "cheap", "mahal", "expensive", "hemat", "economical",
                        "terjangkau", "affordable"]
 
     const mentionedPrice = priceRefs.find(p => msg.includes(p))
 
-    // Jika ada attribute (color/material/price) dan ada baseQuery → cek apakah continuation
+    // Cek apakah ada attribute (warna/material/price)
     const hasAttribute = !!(mentionedColor || mentionedMaterial || mentionedPrice)
 
-    if (hasAttribute && baseQuery && !isNewSearch) {
-      // Hitung "meaningful words" - abaikan filler words
-      const words = msg.split(/\s+/).filter(w => w.length > 0)
-      const meaningfulWords = words.filter(w => !fillerWords.includes(w))
+    // KEY LOGIC: Jika ada baseQuery DAN ada attribute → ini CONTINUATION
+    // Reformulasi query dengan menggabungkan baseQuery + attribute baru
+    if (hasAttribute && baseQuery) {
+      console.log(`[QueryReformulator] Attribute detected - combining with baseQuery`)
 
-      // Jika meaningful words ≤ 2, ini kemungkinan besar continuation
-      // Contoh: "saya mau warna putih" → meaningful: "putih" (1 kata)
-      // Contoh: "yang warna putih" → meaningful: "putih" (1 kata)
-      if (meaningfulWords.length <= 2 || words.every(w => fillerWords.includes(w) || colors.includes(w) || materials.includes(w) || priceRefs.includes(w))) {
-        // REFORMULASI CERDAS: baseQuery + new attribute
-        // Bersihkan baseQuery dari attribute lama jika ada
-        let cleanBaseQuery = baseQuery
+      // Bersihkan baseQuery dari prefix words
+      let cleanBaseQuery = baseQuery
+        .replace(/^(saya mau|saya cari|cari|mau|beli|tampil|show|find|looking for|i want|i need|adakah|apa ada)\s*/i, "")
+        .trim()
 
-        // Hapus warna lama dari baseQuery
-        for (const c of colors) {
-          cleanBaseQuery = cleanBaseQuery.replace(new RegExp(`\\b${c}\\b`, "gi"), "").trim()
-        }
+      // Bersihkan baseQuery dari attribute lama
+      for (const c of colors) {
+        cleanBaseQuery = cleanBaseQuery.replace(new RegExp(`\\b${c}\\b`, "gi"), "").trim()
+      }
+      for (const m of materials) {
+        cleanBaseQuery = cleanBaseQuery.replace(new RegExp(`\\b${m}\\b`, "gi"), "").trim()
+      }
+      for (const p of priceRefs) {
+        cleanBaseQuery = cleanBaseQuery.replace(new RegExp(`\\b${p}\\b`, "gi"), "").trim()
+      }
 
-        // Hapus material lama dari baseQuery
-        for (const m of materials) {
-          cleanBaseQuery = cleanBaseQuery.replace(new RegExp(`\\b${m}\\b`, "gi"), "").trim()
-        }
+      // Tambahkan attribute baru
+      const attributes: string[] = []
+      if (mentionedColor) attributes.push(mentionedColor)
+      if (mentionedMaterial) attributes.push(mentionedMaterial)
+      if (mentionedPrice) attributes.push(mentionedPrice)
 
-        // Hapus price reference lama dari baseQuery
-        for (const p of priceRefs) {
-          cleanBaseQuery = cleanBaseQuery.replace(new RegExp(`\\b${p}\\b`, "gi"), "").trim()
-        }
+      const newQuery = attributes.length > 0
+        ? `${cleanBaseQuery} ${attributes.join(" ")}`.trim()
+        : cleanBaseQuery
 
-        // Clean up: hilangkan "saya mau", "cari", dll dari baseQuery
-        cleanBaseQuery = cleanBaseQuery
-          .replace(/^(saya mau|saya cari|cari|mau|beli|tampil|show|find|looking for|i want|i need|adakah|apa ada)\s*/i, "")
-          .replace(/^(yang|yang warna|yang bahannya|warna|bahannya)\s*/i, "")
-          .trim()
+      console.log(`[QueryReformulator] Reformulated: "${baseQuery}" → "${newQuery}"`)
 
-        // Tambahkan attribute baru
-        const attributes: string[] = []
-        if (mentionedColor) attributes.push(mentionedColor)
-        if (mentionedMaterial) attributes.push(mentionedMaterial)
-        if (mentionedPrice) attributes.push(mentionedPrice)
-
-        const newQuery = attributes.length > 0
-          ? `${cleanBaseQuery} ${attributes.join(" ")}`.trim()
-          : cleanBaseQuery
-
-        return {
-          query: newQuery,
-          isContinuation: true,
-          isNewSearch: false,
-          detectedAttributes: {
-            color: mentionedColor,
-            material: mentionedMaterial,
-            price: mentionedPrice
-          }
+      return {
+        query: newQuery,
+        isContinuation: true,
+        isNewSearch: false,
+        detectedAttributes: {
+          color: mentionedColor,
+          material: mentionedMaterial,
+          price: mentionedPrice
         }
       }
     }
@@ -238,7 +213,7 @@ export class QueryReformulator {
       }
     }
 
-    // Default: tidak bisa handle rule-based, delegate ke LLM
+    // Default: delegate ke LLM untuk kasus kompleks
     return null
   }
 
@@ -272,7 +247,51 @@ export class QueryReformulator {
         }
       }
     } catch (error) {
-      console.error("[QueryReformulator] LLM error, using fallback:", error)
+      console.error("[QueryReformulator] LLM error, using smart fallback:", error)
+
+      // SMART FALLBACK: Tetap coba reformulasi berdasarkan context
+      const msg = userMessage.toLowerCase().trim()
+      const baseQuery = context.baseQuery.toLowerCase()
+
+      const colors = ["putih", "white", "hitam", "black", "coklat", "brown", "merah", "red",
+                      "biru", "blue", "hijau", "green", "kuning", "yellow", "abu", "gray"]
+      const materials = ["kayu", "wood", "kulit", "leather", "kain", "fabric", "besi", "metal"]
+      const priceRefs = ["murah", "cheap", "mahal", "expensive", "hemat", "economical"]
+
+      const mentionedColor = colors.find(c => msg.includes(c))
+      const mentionedMaterial = materials.find(m => msg.includes(m))
+      const mentionedPrice = priceRefs.find(p => msg.includes(p))
+      const hasAttribute = !!(mentionedColor || mentionedMaterial || mentionedPrice)
+
+      // Jika ada baseQuery dan ada attribute, reformulasi manual
+      if (baseQuery && hasAttribute) {
+        let cleanBase = baseQuery.replace(/^(saya mau|saya cari|cari|mau|beli|tampil|show|find|looking for|i want|i need|adakah|apa ada)\s*/i, "").trim()
+
+        // Hapus attribute lama
+        for (const c of colors) cleanBase = cleanBase.replace(new RegExp(`\\b${c}\\b`, "gi"), "").trim()
+        for (const m of materials) cleanBase = cleanBase.replace(new RegExp(`\\b${m}\\b`, "gi"), "").trim()
+        for (const p of priceRefs) cleanBase = cleanBase.replace(new RegExp(`\\b${p}\\b`, "gi"), "").trim()
+
+        const attrs: string[] = []
+        if (mentionedColor) attrs.push(mentionedColor)
+        if (mentionedMaterial) attrs.push(mentionedMaterial)
+        if (mentionedPrice) attrs.push(mentionedPrice)
+
+        const newQuery = attrs.length > 0 ? `${cleanBase} ${attrs.join(" ")}`.trim() : cleanBase
+
+        console.log(`[QueryReformulator] Smart fallback: "${baseQuery}" → "${newQuery}"`)
+
+        return {
+          query: newQuery,
+          isContinuation: true,
+          isNewSearch: false,
+          detectedAttributes: {
+            color: mentionedColor,
+            material: mentionedMaterial,
+            price: mentionedPrice
+          }
+        }
+      }
 
       // Fallback: gunakan pesan asli
       return {
