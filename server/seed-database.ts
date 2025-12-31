@@ -15,7 +15,18 @@ import "dotenv/config"
 // Create MongoDB client instance using connection string from environment variables
 const client = new MongoClient(process.env.MONGODB_ATLAS_URI as string)
 
+<<<<<<< HEAD
 // Define schema for furniture item structure using Zod validation (matching products_enriched.json)
+=======
+// Initialize Google Gemini chat model for generating synthetic furniture data
+const llm = new ChatGoogleGenerativeAI({
+  model: "gemini-2.5-flash",  // Use Gemini 2.5 Flash model
+  temperature: 0.7,               // Set creativity level (0.7 = moderately creative)
+  apiKey: process.env.GOOGLE_API_KEY, // Google API key from environment variables
+})
+
+// Define schema for furniture item structure using Zod validation
+>>>>>>> 65e9c20049a10c65392dc9f0a9849e4eb60c2622
 const itemSchema = z.object({
   item_id: z.string(),                    // Unique identifier for the item
   item_name: z.string(),                  // Name of the furniture item

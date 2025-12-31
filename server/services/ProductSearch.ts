@@ -96,7 +96,11 @@ export class ProductSearchService {
       }
 
       // Format hasil
+<<<<<<< HEAD
       const products = this.formatProducts(filteredProducts.slice(0, n))
+=======
+      const products = this.formatProducts(filteredResults.slice(0, n))
+>>>>>>> 65e9c20049a10c65392dc9f0a9849e4eb60c2622
 
       return {
         products,
@@ -342,4 +346,8 @@ export class ProductSearchService {
 
 export function createProductSearchService(mongoClient: MongoClient): ProductSearchService {
   return new ProductSearchService(mongoClient)
+<<<<<<< HEAD
 }
+=======
+}
+>>>>>>> 65e9c20049a10c65392dc9f0a9849e4eb60c2622

@@ -113,31 +113,55 @@ export class ResponseGenerator {
    * No results response - bisa pakai LLM untuk lebih helpful.
    */
   private noResultsResponse(context: ResponseContext): GeneratedResponse {
+<<<<<<< HEAD
     const { language, activeFilters } = context
 
     if (language === "id") {
+=======
+    const { language, searchQuery, activeFilters } = context
+
+    if (language === "id") {
+      const intro = searchQuery
+        ? `Maaf, saya tidak menemukan produk "${searchQuery}".`
+        : "Maaf, tidak ada produk yang cocok."
+
+>>>>>>> 65e9c20049a10c65392dc9f0a9849e4eb60c2622
       let followUp = "Coba cari dengan kata kunci lain."
 
       if (activeFilters && Object.keys(activeFilters).length > 0) {
         followUp = "Coba kurangi filter atau ganti kategori."
       }
 
+<<<<<<< HEAD
       return {
         intro: "Maaf, saya tidak menemukan produk yang cocok dengan pencarian Anda.",
         followUp
       }
     }
 
+=======
+      return { intro, followUp }
+    }
+
+    const intro = searchQuery
+      ? `Sorry, I couldn't find any products matching "${searchQuery}".`
+      : "Sorry, no products found."
+
+>>>>>>> 65e9c20049a10c65392dc9f0a9849e4eb60c2622
     let followUp = "Try a different search term."
 
     if (activeFilters && Object.keys(activeFilters).length > 0) {
       followUp = "Try reducing your filters or changing the category."
     }
 
+<<<<<<< HEAD
     return {
       intro: "Sorry, I couldn't find any products matching your criteria.",
       followUp
     }
+=======
+    return { intro, followUp }
+>>>>>>> 65e9c20049a10c65392dc9f0a9849e4eb60c2622
   }
 
   /**
@@ -145,13 +169,21 @@ export class ResponseGenerator {
    * PROMPT KECIL - context sudah disediakan, LLM hanya format.
    */
   private async productResponse(context: ResponseContext): Promise<GeneratedResponse> {
+<<<<<<< HEAD
     const { language, productCount, products, activeFilters } = context
+=======
+    const { language, productCount, products, searchQuery, activeFilters } = context
+>>>>>>> 65e9c20049a10c65392dc9f0a9849e4eb60c2622
 
     // Build context info untuk LLM
     const productNames = products.slice(0, 3).map(p => p.item_name).join(", ")
     const categoryHint = activeFilters?.category || products[0]?.categories[0] || ""
 
+<<<<<<< HEAD
     const prompt = this.buildPrompt(language, productCount, productNames, categoryHint)
+=======
+    const prompt = this.buildPrompt(language, productCount, productNames, categoryHint, searchQuery)
+>>>>>>> 65e9c20049a10c65392dc9f0a9849e4eb60c2622
 
     try {
       const result = await this.model.invoke([
@@ -210,23 +242,40 @@ OUTPUT FORMAT JSON:
     language: "id" | "en",
     count: number,
     productNames: string,
+<<<<<<< HEAD
     category: string
+=======
+    category: string,
+    searchQuery?: string
+>>>>>>> 65e9c20049a10c65392dc9f0a9849e4eb60c2622
   ): string {
     if (language === "id") {
       return `Context:
 - Ditemukan ${count} produk
 - Contoh produk: ${productNames}
 - Kategori: ${category || "berbagai"}
+<<<<<<< HEAD
 
 Buat respons JSON yang ramah dan singkat. Jangan sebutkan query pencarian di respons.`
+=======
+- Pencarian: "${searchQuery || "general"}"
+
+Buat respons JSON yang ramah dan singkat.`
+>>>>>>> 65e9c20049a10c65392dc9f0a9849e4eb60c2622
     }
 
     return `Context:
 - Found ${count} products
 - Sample products: ${productNames}
 - Category: ${category || "various"}
+<<<<<<< HEAD
 
 Create a friendly, short JSON response. Do not mention the search query in the response.`
+=======
+- Search: "${searchQuery || "general"}"
+
+Create a friendly, short JSON response.`
+>>>>>>> 65e9c20049a10c65392dc9f0a9849e4eb60c2622
   }
 
   /**
@@ -256,17 +305,33 @@ Create a friendly, short JSON response. Do not mention the search query in the r
    * Fallback response ketika LLM gagal.
    */
   private fallbackResponse(context: ResponseContext): GeneratedResponse {
+<<<<<<< HEAD
     const { language, productCount } = context
 
     if (language === "id") {
       return {
         intro: `Berikut ${productCount} produk yang mungkin Anda suka.`,
+=======
+    const { language, productCount, searchQuery } = context
+
+    if (language === "id") {
+      return {
+        intro: searchQuery
+          ? `Saya menemukan ${productCount} produk untuk "${searchQuery}".`
+          : `Berikut ${productCount} produk yang mungkin Anda suka.`,
+>>>>>>> 65e9c20049a10c65392dc9f0a9849e4eb60c2622
         followUp: "Ada yang ingin Anda tanyakan tentang produk ini?"
       }
     }
 
     return {
+<<<<<<< HEAD
       intro: `Here are ${productCount} products you might like.`,
+=======
+      intro: searchQuery
+        ? `I found ${productCount} products for "${searchQuery}".`
+        : `Here are ${productCount} products you might like.`,
+>>>>>>> 65e9c20049a10c65392dc9f0a9849e4eb60c2622
       followUp: "Any questions about these products?"
     }
   }
@@ -276,4 +341,8 @@ Create a friendly, short JSON response. Do not mention the search query in the r
 // EXPORT SINGLETON
 // ============================================================================
 
+<<<<<<< HEAD
 export const responseGenerator = new ResponseGenerator()
+=======
+export const responseGenerator = new ResponseGenerator()
+>>>>>>> 65e9c20049a10c65392dc9f0a9849e4eb60c2622
