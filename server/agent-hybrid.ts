@@ -112,9 +112,9 @@ async function detectNewSearch(
   // CEK 4: Jika message mengandung attribute (warna/material/price), ini CONTINUATION
   // BUKAN new search, meskipun ada "apa ada" atau "ada"
   const attributes = ["putih", "white", "hitam", "black", "coklat", "brown",
-                      "merah", "red", "biru", "blue", "hijau", "green",
-                      "kayu", "wood", "kulit", "leather", "kain", "fabric",
-                      "murah", "cheap", "mahal", "expensive"]
+    "merah", "red", "biru", "blue", "hijau", "green",
+    "kayu", "wood", "kulit", "leather", "kain", "fabric",
+    "murah", "cheap", "mahal", "expensive"]
 
   const hasAttribute = attributes.some(attr => msg.includes(attr))
 
@@ -152,13 +152,51 @@ export async function callAgent(
   // ========================================================================
   // STEP 2: Intent Extraction (Small LLM)
   // ========================================================================
-  const intent = await intentExtractor.extract(query, {
+  let intent = await intentExtractor.extract(query, {
     currentCategory: state.filters.category,
     activeFilters: state.filters,
-    lastQuery: state.search.query
+    lastQuery: state.search.query,
+    lastIntent: state.lastIntent,
+    lastFaqTopic: state.lastFaqTopic
   })
 
   console.log(`[HybridAgent] Extracted intent:`, intent)
+
+  // ========================================================================
+  // STEP 2.5: Smart Follow-up Detection
+  // ========================================================================
+  // Detect when user gives short affirmative responses like "iya", "ya", "ok"
+  // and determine what they're responding to based on conversation context
+  const isAffirmativeResponse = /^(iya+|ya+|yes|ok|oke|okay|mau|boleh|tentu|sure|please|tolong|ingin( tahu)?|bisa|dong)$/i.test(query.trim())
+  const isShortMessage = query.trim().length < 20
+
+  if (isAffirmativeResponse && isShortMessage && intent.intent === 'unknown') {
+    console.log(`[HybridAgent] Detected affirmative short response, checking context...`)
+    console.log(`[HybridAgent] Last intent: ${state.lastIntent}, has products: ${(state.search.resultCount || 0) > 0}`)
+
+    // Case 1: User responds "iya" after FAQ about location -> give hours
+    if (state.lastIntent === 'faq_info' && state.lastFaqTopic === 'location') {
+      intent = { intent: 'faq_info', faq_topic: 'hours', language: intent.language }
+      console.log(`[HybridAgent] Follow-up: FAQ location -> hours`)
+    }
+    // Case 2: User responds "iya" after product search -> they want more product info
+    else if (state.lastIntent === 'search' && (state.search.resultCount || 0) > 0) {
+      // User wants more info about the product shown - generate helpful response
+      intent = { intent: 'product_info', language: intent.language }
+      console.log(`[HybridAgent] Follow-up: Product search -> want more info`)
+    }
+    // Case 3: User responds after other FAQ
+    else if (state.lastIntent === 'faq_info') {
+      // Default to help if we don't know what they want
+      intent = { intent: 'help', language: intent.language }
+      console.log(`[HybridAgent] Follow-up: FAQ -> help`)
+    }
+    // Default: treat as wanting to explore products
+    else {
+      intent = { intent: 'help', language: intent.language }
+      console.log(`[HybridAgent] Follow-up: Default -> help`)
+    }
+  }
 
   // Update language state
   if (intent.language) {
@@ -169,15 +207,89 @@ export async function callAgent(
   }
 
   // ========================================================================
+  // STEP 2.6: Language Check - Only English supported
+  // ========================================================================
+  if (intent.language === "id") {
+    // Add user message to history
+    stateStore.update(thread_id, {
+      type: "ADD_MESSAGE",
+      role: "user",
+      content: query
+    })
+
+    return {
+      intro: "Sorry, I can only communicate in English. Please type your message in English and I'll be happy to help you find the perfect furniture for your home! 🏠",
+      products: [],
+      followUp: "What are you looking for today?",
+      meta: {
+        hasProducts: false,
+        searchType: "none",
+        productCount: 0,
+        intent: "language_unsupported",
+        detectedLanguage: intent.language
+      }
+    }
+  }
+
+  // ========================================================================
   // STEP 3: Handle Special Intents (No LLM needed)
   // ========================================================================
-  if (intent.intent === "greeting" || intent.intent === "help") {
-    const greetingResponse = await responseGenerator.generate({
+  if (intent.intent === "greeting" || intent.intent === "help" || intent.intent === "faq_info" || intent.intent === "product_info") {
+
+    // Handle product_info specially - show info about previously searched products
+    if (intent.intent === "product_info" && state.search.results && state.search.results.length > 0) {
+      const product = state.search.results[0]
+      const productInfo = `
+Berikut info detail produk ${product.item_name}:
+
+📦 **Dimensi**: ${product.item_description.match(/\d+\s*x\s*\d+\s*x\s*\d+\s*(cm|mm)?/i)?.[0] || 'Silakan hubungi CS untuk dimensi'}
+🪑 **Bahan**: ${product.item_description.match(/(kayu|leather|kulit|fabric|kain|glass|kaca|metal|besi|rotan)/i)?.[0] || 'Lihat deskripsi produk'}
+💰 **Harga**: Rp ${product.prices?.[0]?.price?.toLocaleString('id-ID') || '-'}
+🏷️ **Brand**: ${product.brand || 'Home Decor Indonesia'}
+
+Untuk pemesanan atau tanya lebih lanjut, silakan klik produk atau hubungi CS kami! 😊
+      `.trim()
+
+      // Track intent
+      stateStore.update(thread_id, {
+        type: "SET_LAST_INTENT",
+        intent: intent.intent
+      })
+
+      stateStore.update(thread_id, {
+        type: "ADD_MESSAGE",
+        role: "user",
+        content: query
+      })
+
+      return {
+        intro: productInfo,
+        products: state.search.results.slice(0, 3), // Show products again
+        followUp: "Ada yang lain yang bisa saya bantu? 🛋️",
+        meta: {
+          hasProducts: true,
+          searchType: "none",
+          productCount: state.search.results.length,
+          intent: intent.intent,
+          detectedLanguage: intent.language
+        }
+      }
+    }
+
+    const specialResponse = await responseGenerator.generate({
       language: intent.language,
       hasProducts: false,
       productCount: 0,
       products: [],
-      intent: intent.intent
+      intent: intent.intent,
+      faqTopic: intent.faq_topic
+    })
+
+    // Track the last intent for follow-up detection
+    stateStore.update(thread_id, {
+      type: "SET_LAST_INTENT",
+      intent: intent.intent,
+      faqTopic: intent.faq_topic
     })
 
     // Add user message to history
@@ -188,9 +300,9 @@ export async function callAgent(
     })
 
     return {
-      intro: greetingResponse.intro,
+      intro: specialResponse.intro,
       products: [],
-      followUp: greetingResponse.followUp,
+      followUp: specialResponse.followUp,
       meta: {
         hasProducts: false,
         searchType: "none",
@@ -336,6 +448,12 @@ export async function callAgent(
     baseQuery: state.search.baseQuery,
     results: searchResult.products,
     searchType: searchResult.searchType
+  })
+
+  // Track last intent as 'search' for follow-up detection
+  stateStore.update(thread_id, {
+    type: "SET_LAST_INTENT",
+    intent: "search"
   })
 
   // Add user message to history

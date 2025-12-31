@@ -38,6 +38,8 @@ export interface ConversationState {
   search: SearchState
   history: ConversationHistory[]
   language: "id" | "en"
+  lastIntent?: string          // Track last intent for follow-up detection
+  lastFaqTopic?: string        // Track last FAQ topic for follow-up
   createdAt: Date
   updatedAt: Date
 }
@@ -65,6 +67,7 @@ export type StateUpdate =
   | { type: "SET_SEARCH"; query: string; baseQuery?: string; results: ProductItem[]; searchType: "vector" | "text" | "none" }
   | { type: "ADD_MESSAGE"; role: "user" | "assistant"; content: string }
   | { type: "SET_BASE_QUERY"; value: string }
+  | { type: "SET_LAST_INTENT"; intent: string; faqTopic?: string }
 
 /**
  * Apply state update secara deterministik.
@@ -125,6 +128,11 @@ export function applyStateUpdate(
           timestamp: now
         }
       ]
+      break
+
+    case "SET_LAST_INTENT":
+      newState.lastIntent = update.intent
+      newState.lastFaqTopic = update.faqTopic
       break
   }
 

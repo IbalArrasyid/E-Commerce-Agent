@@ -29,11 +29,15 @@ export const IntentSchema = z.object({
     "filter_clear",  // Reset filter
     "greeting",      // Sapaan
     "help",          // Minta bantuan
+    "faq_info",      // Pertanyaan umum (lokasi, jam buka, kontak, dll)
     "unknown"        // Tidak jelas
   ]),
 
   // Search query - nullable untuk optional (REQUIRED tapi boleh null)
   search_query: z.string().nullable(),
+
+  // FAQ topic - untuk intent faq_info (REQUIRED tapi boleh null)
+  faq_topic: z.string().nullable(),
 
   // Filter updates - semua field nullable untuk optional (REQUIRED tapi boleh null)
   category: z.string().nullable(),
@@ -55,6 +59,11 @@ export const IntentSchema = z.object({
   // search_query
   if (data.search_query) {
     result.search_query = data.search_query
+  }
+
+  // faq_topic for faq_info intent
+  if (data.faq_topic) {
+    result.faq_topic = data.faq_topic
   }
 
   // filters - kumpulkan field yang tidak null
@@ -107,26 +116,53 @@ export class IntentExtractor {
       currentCategory?: string
       activeFilters?: Record<string, any>
       lastQuery?: string
+      lastIntent?: string
+      lastFaqTopic?: string
     }
   ): Promise<Intent> {
     const systemPrompt = this.buildSystemPrompt(currentContext)
 
     try {
-      // Structured output with Zod schema
-      const structuredLlm = this.model.withStructuredOutput(IntentSchema)
-
-      const result = await structuredLlm.invoke([
+      // Use regular invoke with JSON parsing (Groq doesn't support json_schema format)
+      const result = await this.model.invoke([
         { role: "system", content: systemPrompt },
         { role: "user", content: userMessage }
       ])
 
-      return result as Intent
+      const content = typeof result.content === "string" ? result.content : JSON.stringify(result.content)
+
+      // Parse JSON from response
+      const parsed = this.parseJsonResponse(content)
+
+      // Validate and transform with Zod schema
+      const validated = IntentSchema.parse(parsed)
+
+      return validated as Intent
     } catch (error) {
       console.error("Intent extraction error:", error)
 
       // Fallback: return default intent with context
       return this.fallbackIntent(userMessage, currentContext)
     }
+  }
+
+  /**
+   * Parse JSON from LLM response, handling markdown code blocks
+   */
+  private parseJsonResponse(content: string): any {
+    // Remove markdown code blocks if present
+    let cleaned = content
+      .replace(/```json\n?/g, "")
+      .replace(/```\n?/g, "")
+      .trim()
+
+    // Try to find JSON object in the response
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
+    if (jsonMatch) {
+      cleaned = jsonMatch[0]
+    }
+
+    return JSON.parse(cleaned)
   }
 
   /**
@@ -145,18 +181,18 @@ RULES:
 2. Extract search query if user wants to find products
 3. IMPORTANT: Handle continuation/elliptical queries - if user only mentions a color, material,
    or attribute without a product name, combine it with the last search query.
-   Example: last search was "sofa", user says "putih" → search_query: "sofa putih", color: "putih"
+   Example: last search was "sofa", user says "white" → search_query: "white sofa", color: "white"
 4. Extract filters: category, color, material, price range, brand
 5. Detect language: "id" for Indonesian, "en" for English
-6. Map common terms:
+6. Map common terms to ENGLISH categories:
    - sofa, settee, couch → category: "sofa"
-   - meja, table → category: "meja"
-   - kursi, chair → category: "kursi"
-   - lemari, cabinet → category: "lemari"
-   - putih, white → color: "putih"
-   - hitam, black → color: "hitam"
-   - kayu, wood → material: "kayu"
-   - kulit, leather → material: "kulit"
+   - table, dining table, coffee table → category: "table"
+   - chair, armchair → category: "chair"
+   - cabinet, wardrobe, cupboard → category: "cabinet"
+   - shelf, bookshelf → category: "shelf"
+   - bed, mattress → category: "bed"
+7. Colors in English: white, black, brown, grey, gray, red, blue, green, yellow, cream, beige
+8. Materials in English: wood, leather, fabric, metal, glass, rattan, plastic
 
 CONTINUATION QUERY HANDLING:
 - If message is ONLY a color (e.g., "putih", "merah"), combine with last_query
@@ -170,12 +206,23 @@ INTENT TYPES:
 - filter_clear: User wants to reset filters
 - greeting: Hi, hello, halo
 - help: User needs help
+- faq_info: General questions NOT about products (lokasi toko, jam buka, kontak, pengiriman, pembayaran, garansi, dll)
 - unknown: Cannot determine
+
+FAQ TOPICS (for faq_info intent):
+- location: Pertanyaan tentang lokasi/alamat toko
+- hours: Jam buka/operasional
+- contact: Nomor telepon, email, WhatsApp
+- shipping: Pengiriman, ongkir, estimasi sampai
+- payment: Metode pembayaran, transfer, cicilan
+- warranty: Garansi, retur, komplain
+- other: Pertanyaan umum lainnya
 
 OUTPUT FORMAT (ALL FIELDS REQUIRED, use null for empty):
 {
-  "intent": "search" | "filter_add" | "filter_clear" | "greeting" | "help" | "unknown",
+  "intent": "search" | "filter_add" | "filter_clear" | "greeting" | "help" | "faq_info" | "unknown",
   "search_query": "clean search query" | null,
+  "faq_topic": "location" | "hours" | "contact" | "shipping" | "payment" | "warranty" | "other" | null,
   "category": "sofa" | null,
   "color": "putih" | null,
   "material": "kayu" | null,
@@ -240,17 +287,17 @@ OUTPUT FORMAT (ALL FIELDS REQUIRED, use null for empty):
 
     // Color detection
     const colors = ["putih", "white", "hitam", "black", "coklat", "brown", "merah", "red",
-                    "biru", "blue", "hijau", "green", "kuning", "yellow", "abu", "gray", "grey"]
+      "biru", "blue", "hijau", "green", "kuning", "yellow", "abu", "gray", "grey"]
     for (const color of colors) {
       if (msg.includes(color)) {
         filters.color = color.length <= 5 ? color : (color === "white" ? "putih" :
-                        color === "black" ? "hitam" :
-                        color === "brown" ? "coklat" :
-                        color === "red" ? "merah" :
-                        color === "blue" ? "biru" :
-                        color === "green" ? "hijau" :
-                        color === "yellow" ? "kuning" :
-                        color === "gray" || color === "grey" ? "abu" : color)
+          color === "black" ? "hitam" :
+            color === "brown" ? "coklat" :
+              color === "red" ? "merah" :
+                color === "blue" ? "biru" :
+                  color === "green" ? "hijau" :
+                    color === "yellow" ? "kuning" :
+                      color === "gray" || color === "grey" ? "abu" : color)
         // Remove color from search query
         searchQuery = searchQuery.replace(new RegExp(color, "gi"), "").trim()
         break
@@ -259,16 +306,16 @@ OUTPUT FORMAT (ALL FIELDS REQUIRED, use null for empty):
 
     // Material detection
     const materials = ["kayu", "wood", "kulit", "leather", "kain", "fabric", "besi", "metal",
-                       "rotan", "rattan", "plastik", "plastic", "kaca", "glass"]
+      "rotan", "rattan", "plastik", "plastic", "kaca", "glass"]
     for (const material of materials) {
       if (msg.includes(material)) {
         filters.material = material.length <= 5 ? material : (material === "wood" ? "kayu" :
-                          material === "leather" ? "kulit" :
-                          material === "fabric" ? "kain" :
-                          material === "metal" ? "besi" :
-                          material === "rattan" ? "rotan" :
-                          material === "plastic" ? "plastik" :
-                          material === "glass" ? "kaca" : material)
+          material === "leather" ? "kulit" :
+            material === "fabric" ? "kain" :
+              material === "metal" ? "besi" :
+                material === "rattan" ? "rotan" :
+                  material === "plastic" ? "plastik" :
+                    material === "glass" ? "kaca" : material)
         searchQuery = searchQuery.replace(new RegExp(material, "gi"), "").trim()
         break
       }

@@ -120,8 +120,8 @@ export class QueryReformulator {
 
     // Daftar kategori produk - NEW SEARCH jika mention kategori berbeda
     const categories = ["sofa", "settee", "couch", "meja", "table", "kursi", "chair",
-                        "lemari", "cabinet", "rak", "shelf", "buffet", "sideboard",
-                        "bed", "kasur", "mattress", "coffee table", "meja tamu"]
+      "lemari", "cabinet", "rak", "shelf", "buffet", "sideboard",
+      "bed", "kasur", "mattress", "coffee table", "meja tamu"]
 
     const mentionedCategory = categories.find(cat => msg.includes(cat))
 
@@ -137,21 +137,21 @@ export class QueryReformulator {
 
     // Daftar warna
     const colors = ["putih", "white", "hitam", "black", "coklat", "brown", "merah", "red",
-                    "biru", "blue", "hijau", "green", "kuning", "yellow", "abu", "gray",
-                    "grey", "cream", "beige", "gold", "emas", "silver", "perak"]
+      "biru", "blue", "hijau", "green", "kuning", "yellow", "abu", "gray",
+      "grey", "cream", "beige", "gold", "emas", "silver", "perak"]
 
     const mentionedColor = colors.find(c => msg.includes(c))
 
     // Daftar material
     const materials = ["kayu", "wood", "kulit", "leather", "kain", "fabric", "besi", "metal",
-                       "rotan", "rattan", "plastik", "plastic", "kaca", "glass", "marmer",
-                       "marble", "velvet", "beludru", "linen", "katun"]
+      "rotan", "rattan", "plastik", "plastic", "kaca", "glass", "marmer",
+      "marble", "velvet", "beludru", "linen", "katun"]
 
     const mentionedMaterial = materials.find(m => msg.includes(m))
 
     // Daftar price reference
     const priceRefs = ["murah", "cheap", "mahal", "expensive", "hemat", "economical",
-                       "terjangkau", "affordable"]
+      "terjangkau", "affordable"]
 
     const mentionedPrice = priceRefs.find(p => msg.includes(p))
 
@@ -228,22 +228,26 @@ export class QueryReformulator {
     const systemPrompt = this.buildSystemPrompt(context)
 
     try {
-      const structuredLlm = this.model.withStructuredOutput(ReformulateSchema)
-
-      const result = await structuredLlm.invoke([
+      // Use regular invoke with JSON parsing (Groq doesn't support json_schema format)
+      const result = await this.model.invoke([
         { role: "system", content: systemPrompt },
         { role: "user", content: userMessage }
       ])
 
+      const content = typeof result.content === "string" ? result.content : JSON.stringify(result.content)
+
+      // Parse JSON from response
+      const parsed = this.parseJsonResponse(content)
+
       return {
-        query: result.query,
-        isContinuation: result.is_continuation,
-        isNewSearch: result.is_new_search,
+        query: parsed.query,
+        isContinuation: parsed.is_continuation,
+        isNewSearch: parsed.is_new_search,
         detectedAttributes: {
-          category: result.detected_category || undefined,
-          color: result.detected_color || undefined,
-          material: result.detected_material || undefined,
-          price: result.detected_price || undefined
+          category: parsed.detected_category || undefined,
+          color: parsed.detected_color || undefined,
+          material: parsed.detected_material || undefined,
+          price: parsed.detected_price || undefined
         }
       }
     } catch (error) {
@@ -254,7 +258,7 @@ export class QueryReformulator {
       const baseQuery = context.baseQuery.toLowerCase()
 
       const colors = ["putih", "white", "hitam", "black", "coklat", "brown", "merah", "red",
-                      "biru", "blue", "hijau", "green", "kuning", "yellow", "abu", "gray"]
+        "biru", "blue", "hijau", "green", "kuning", "yellow", "abu", "gray"]
       const materials = ["kayu", "wood", "kulit", "leather", "kain", "fabric", "besi", "metal"]
       const priceRefs = ["murah", "cheap", "mahal", "expensive", "hemat", "economical"]
 
@@ -301,6 +305,25 @@ export class QueryReformulator {
         detectedAttributes: {}
       }
     }
+  }
+
+  /**
+   * Parse JSON from LLM response, handling markdown code blocks
+   */
+  private parseJsonResponse(content: string): any {
+    // Remove markdown code blocks if present
+    let cleaned = content
+      .replace(/```json\n?/g, "")
+      .replace(/```\n?/g, "")
+      .trim()
+
+    // Try to find JSON object in the response
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
+    if (jsonMatch) {
+      cleaned = jsonMatch[0]
+    }
+
+    return JSON.parse(cleaned)
   }
 
   /**
