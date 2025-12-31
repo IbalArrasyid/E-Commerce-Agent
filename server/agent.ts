@@ -1,6 +1,6 @@
 // Import required modules from LangChain ecosystem
 import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai" // For creating vector embeddings from text using Gemini
-import { ChatGoogleGenerativeAI } from "@langchain/google-genai" // Google's Gemini AI model
+import { ChatOpenAI } from "@langchain/openai"                     // OpenAI chat model integration
 import { AIMessage, BaseMessage, HumanMessage } from "@langchain/core/messages" // Message types for conversations
 import {
   ChatPromptTemplate,      // For creating structured prompts with placeholders
@@ -15,6 +15,97 @@ import { MongoDBAtlasVectorSearch } from "@langchain/mongodb"   // Vector search
 import { MongoClient } from "mongodb"                          // MongoDB database client
 import { z } from "zod"                                        // Schema validation library
 import "dotenv/config"                                         // Load environment variables from .env file
+
+// ============================================================================
+// TYPE DEFINITIONS
+// ============================================================================
+
+/**
+ * Represents price information for a product variant
+ */
+export interface ProductPrice {
+  variant?: string
+  price: number
+  currency?: string
+}
+
+/**
+ * Represents a single product item from the inventory
+ */
+export interface ProductItem {
+  item_id: string
+  item_name: string
+  item_description: string
+  brand: string
+  prices: ProductPrice[]
+  user_reviews?: {
+    rating?: number
+    count?: number
+  }
+  categories: string[]
+  images: string[]
+}
+
+/**
+ * Represents the structured agent response with separated text and products
+ */
+export interface AgentResponse {
+  // Opening/conversational text from the AI
+  intro: string
+  // Product recommendations extracted from the search results (single source of truth)
+  products: ProductItem[]
+  // Follow-up question from the AI
+  followUp: string
+  // Metadata about the response
+  meta?: {
+    hasProducts: boolean
+    searchType?: "vector" | "text" | "none"
+    productCount: number
+  }
+}
+
+/**
+ * Represents the raw search results from the item lookup tool
+ */
+interface SearchResults {
+  results?: Array<[any, number] | any>
+  searchType?: string
+  query?: string
+  count?: number
+  error?: string
+  message?: string
+}
+
+// Function to parse product recommendations from AI response and search results
+function extractProductsFromTool(searchResults: SearchResults | null): {
+  hasProducts: boolean
+  products: ProductItem[]
+  searchType?: "vector" | "text" | "none"
+} {
+  if (!searchResults || !searchResults.results) {
+    return { hasProducts: false, products: [], searchType: "none" }
+  }
+
+  const products: ProductItem[] = searchResults.results
+    .map((item: any) => {
+      const data = item[0]?.metadata || item.metadata || item
+      return {
+        item_id: data.item_id,
+        item_name: data.item_name,
+        item_description: data.ai_generated?.description || data.item_description,
+        brand: data.brand,
+        prices: data.prices,
+        user_reviews: data.user_reviews,
+        categories: data.categories,
+        images: data.images || []
+      }
+    })
+    .slice(0, 5)
+
+  const searchType: "vector" | "text" = searchResults.searchType === "vector" ? "vector" : "text"
+
+  return { hasProducts: products.length > 0, products, searchType }
+}
 
 // Utility function to handle API rate limits with exponential backoff
 async function retryWithBackoff<T>(
@@ -41,11 +132,92 @@ async function retryWithBackoff<T>(
   throw new Error("Max retries exceeded") // This should never be reached
 }
 
+async function reformulateQuery(originalQuery: string) {
+  const reformulator = new ChatOpenAI({
+    apiKey: process.env.GROQ_API_KEY,
+    model: "openai/gpt-oss-120b",
+    temperature: 0,
+    configuration: {
+      baseURL: "https://api.groq.com/openai/v1",
+    },
+  })
+
+  const prompt = ChatPromptTemplate.fromMessages([
+  [
+    "system",
+    `TASK: Query rewriting ONLY.
+
+    You are NOT a chatbot.
+    You are NOT allowed to answer questions.
+    You ONLY rewrite the user query.
+
+    RULES (STRICT):
+    - Rewrite the query into a short, explicit search query.
+    - Keep the original intent EXACTLY.
+    - DO NOT answer the question.
+    - DO NOT add opinions.
+    - DO NOT change meaning.
+    - Output ONLY the rewritten query.
+    - NO punctuation at the end.
+    - NO explanations.
+    - NO extra words.
+
+    BAD EXAMPLES:
+    User: "Do you have dining tables?"
+    Wrong: "Yes, we have dining tables."
+    Wrong: "I have dining tables available."
+    Wrong: "Saya memiliki meja makan."
+
+    GOOD EXAMPLES:
+    User: "Do you have dining tables?"
+    Output: "dining table furniture"
+
+    User: "Meja makan kayu minimalis"
+    Output: "meja makan kayu minimalis"
+
+    If you violate the rules, your output is invalid.`
+      ],
+      ["human", "{query}"]
+    ])
+
+  const formatted = await prompt.formatMessages({
+    query: originalQuery,
+  })
+
+  const result = await reformulator.invoke(formatted)
+
+    // return typeof result.content === "string"
+    //   ? result.content.trim()
+    //   : originalQuery
+
+  const text =
+    typeof result.content === "string"
+      ? result.content.trim()
+      : originalQuery
+
+  // Guardrail: kalau masih berbentuk kalimat jawaban
+  if (
+    text.toLowerCase().startsWith("saya") ||
+    text.toLowerCase().startsWith("i ") ||
+    text.endsWith("?") ||
+    text.length > originalQuery.length * 2
+  ) {
+    return originalQuery
+  }
+
+  return text
+}
+
+
 // Main function that creates and runs the AI agent
-export async function callAgent(client: MongoClient, query: string, thread_id: string) {
+export async function callAgent(
+  client: MongoClient,
+  query: string,
+  thread_id: string
+): Promise<AgentResponse> {
   try {
     // Database configuration
-    const dbName = "inventory_database"        // Name of the MongoDB database
+    const dbName = "admin_db"        // Name of the MongoDB database
     const db = client.db(dbName)              // Get database instance
     const collection = db.collection("items") // Get the 'items' collection
 
@@ -170,12 +342,14 @@ export async function callAgent(client: MongoClient, query: string, thread_id: s
     const toolNode = new ToolNode<typeof GraphState.State>(tools)
 
     // Initialize the AI model (Google's Gemini)
-    const model = new ChatGoogleGenerativeAI({
-      model: "gemini-2.5-flash",         //  Use Gemini 1.5 Flash model
-      temperature: 0,                    // Deterministic responses (no randomness)
-      maxRetries: 0,                     // Disable built-in retries (we handle our own)
-      apiKey: process.env.GOOGLE_API_KEY, // Google API key from environment
-    }).bindTools(tools)                  // Bind our custom tools to the model
+    const model = new ChatOpenAI({
+      apiKey: process.env.GROQ_API_KEY,
+      model: "openai/gpt-oss-120b",
+      temperature: 0,
+      configuration: {
+        baseURL: "https://api.groq.com/openai/v1",
+      },
+    }).bindTools(tools)
 
     // Decision function: determines next step in the workflow
     function shouldContinue(state: typeof GraphState.State) {
@@ -196,14 +370,50 @@ export async function callAgent(client: MongoClient, query: string, thread_id: s
         const prompt = ChatPromptTemplate.fromMessages([
           [
             "system", // System message defines the AI's role and behavior
-            `You are a helpful E-commerce Chatbot Agent for a furniture store. 
+            `You are a helpful E-commerce Sales Agent for a Home Furnishing & Furniture store.
 
 IMPORTANT: You have access to an item_lookup tool that searches the furniture inventory database. ALWAYS use this tool when customers ask about furniture items, even if the tool returns errors or empty results.
 
-When using the item_lookup tool:
-- If it returns results, provide helpful details about the furniture items
-- If it returns an error or no results, acknowledge this and offer to help in other ways
-- If the database appears to be empty, let the customer know that inventory might be being updated
+LANGUAGE RULES:
+- If the user's message is in Indonesian, respond fully in Indonesian.
+- If the user's message is in English, respond in English.
+- Use clear, natural, and friendly language.
+
+TOOL USAGE (MANDATORY):
+- You MUST always use the item_lookup tool when the user asks about furniture, products, prices, or recommendations.
+- NEVER recommend products without calling the tool first.
+- ONLY use products returned by the tool.
+- DO NOT invent or assume products.
+
+PRODUCT RULES:
+- When a user asks for a category (e.g. sofa, kursi, meja):
+  - Recommend 3–5 products from the SAME category.
+  - The order of products in the array MUST match the tool results order exactly.
+- Each recommended product must exist in the database.
+
+RESPONSE FORMAT (STRICT – MUST FOLLOW):
+
+You MUST return a VALID JSON object and NOTHING ELSE.
+
+Return exactly this JSON structure:
+- intro: your opening message to the user
+- products: array of product objects with item_id, name, brand, description, price, original_price
+- follow_up: one short follow-up question
+
+Example JSON format (you must output valid JSON):
+{{"intro": "Your message here", "products": [], "follow_up": "Your question?"}}
+
+Rules:
+- Do NOT include markdown
+- Do NOT include explanations
+- Do NOT include text outside JSON
+- products MUST match the tool results order exactly
+- follow_up must be ONE short question
+
+IF NO PRODUCTS ARE FOUND:
+- Politely inform the user that no products were found in the intro field.
+- Set products to empty array [].
+- Suggest refining the request in the follow_up field.
 
 Current time: {time}`,
           ],
@@ -237,21 +447,80 @@ Current time: {time}`,
     const app = workflow.compile({ checkpointer })
 
     // Execute the workflow
+    const rewrittenQuery = await reformulateQuery(query)
+
+    console.log("Original query:", query)
+    console.log("Reformulated query:", rewrittenQuery)
+
     const finalState = await app.invoke(
       {
-        messages: [new HumanMessage(query)], // Start with user's question
+        messages: [new HumanMessage(rewrittenQuery)],
       },
       { 
-        recursionLimit: 15,                   // Prevent infinite loops
-        configurable: { thread_id: thread_id } // Conversation thread identifier
+        recursionLimit: 15,
+        configurable: { thread_id: thread_id }
       }
     )
 
     // Extract the final response from the conversation
-    const response = finalState.messages[finalState.messages.length - 1].content
-    console.log("Agent response:", response)
+    const responseMessage = finalState.messages[finalState.messages.length - 1] as AIMessage
 
-    return response // Return the AI's final response
+    // Parse AI structured JSON response
+    let aiStructuredResponse: {
+      intro: string
+      products: any[]
+      follow_up: string
+    }
+
+    try {
+      aiStructuredResponse =
+        typeof responseMessage.content === "string"
+          ? JSON.parse(responseMessage.content)
+          : responseMessage.content
+    } catch (e) {
+      throw new Error("AI response is not valid JSON")
+    }
+
+    console.log("AI structured response:", aiStructuredResponse)
+
+        // Check if there were tool executions with product data
+        let searchResults: SearchResults | null = null;
+        for (let i = finalState.messages.length - 1; i >= 0; i--) {
+          const msg = finalState.messages[i] as AIMessage;
+          if (msg.tool_calls && msg.tool_calls.length > 0) {
+            const toolResultMsg = finalState.messages[i + 1];
+            if (toolResultMsg && toolResultMsg.content) {
+              try {
+                const contentStr = typeof toolResultMsg.content === 'string' 
+                  ? toolResultMsg.content 
+                  : JSON.stringify(toolResultMsg.content);
+                searchResults = JSON.parse(contentStr);
+                break;
+              } catch (e) {
+                console.error("Error parsing tool result:", e);
+              }
+            }
+          }
+        }
+        
+    // Parse and format product recommendations from tool results (single source of truth)
+    const productData = extractProductsFromTool(searchResults)
+
+    console.log("Has products:", productData.hasProducts)
+
+    // Return structured AgentResponse
+    return {
+      intro: aiStructuredResponse.intro,
+      products: productData.products, // from tool (single source of truth)
+      followUp: aiStructuredResponse.follow_up,
+      meta: {
+        hasProducts: productData.hasProducts,
+        searchType: productData.searchType,
+        productCount: productData.products.length
+      }
+    }
+        
+    
 
   } catch (error: any) {
     // Handle different types of errors with user-friendly messages
