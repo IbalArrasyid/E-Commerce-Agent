@@ -109,15 +109,15 @@ export class ResponseGenerator {
     // Define FAQ responses for each topic (English only)
     const faqResponses: Record<string, GeneratedResponse> = {
       location: {
-        intro: "Our store is located at Jl. Sudirman No. 123, Central Jakarta. We also have showrooms in several major cities.",
+        intro: "Our store is located at Jalan Rs Fatmawati No. 5A,C,D 1, RT.1/RW.6, Gandaria Utara, Kec. Kby. Baru, Kota Jakarta Selatan, Daerah Khusus Ibukota Jakarta 12140. We also have showrooms in several major cities.",
         followUp: "Would you like to know our operating hours or search for products?"
       },
       hours: {
-        intro: "Our store is open Monday-Saturday 9:00 AM - 9:00 PM, and Sunday 10:00 AM - 8:00 PM.",
+        intro: "Our store is open Monday-Saturday 9:30 AM - 06:30 PM, and Sunday 11:59 AM - 05:00 PM.",
         followUp: "Is there anything else I can help you with?"
       },
       contact: {
-        intro: "You can reach us via WhatsApp at 0812-3456-7890, email: cs@homedecor.id, or phone (021) 1234-5678.",
+        intro: "You can reach us via WhatsApp at 0818-0604-0506, email: support@homedecorindonesia.com, or phone (021) 722-4248.",
         followUp: "Would you like to search for products or have other questions?"
       },
       shipping: {
@@ -129,11 +129,11 @@ export class ResponseGenerator {
         followUp: "Is there anything else I can help you with?"
       },
       warranty: {
-        intro: "All our products come with a minimum 1-year warranty. Returns can be made within 7 days if the product is damaged or not as expected. Contact our CS for claims.",
+        intro: "All our products come with a minimum 2-year warranty. Returns can be made within 7 days if the product is damaged or not as expected. Contact our CS for claims.",
         followUp: "Would you like to search for products or have other questions?"
       },
       other: {
-        intro: "Thank you for your question. For more information, please contact our customer service at 0812-3456-7890 or email cs@homedecor.id.",
+        intro: "Thank you for your question. For more information, please contact our customer service at 0818-0604-0506 or email support@homedecorindonesia.com.",
         followUp: "In the meantime, would you like to browse our product collection?"
       }
     }

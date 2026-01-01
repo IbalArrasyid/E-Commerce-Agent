@@ -36,6 +36,7 @@ export interface ProductItem {
   user_reviews?: { rating?: number; count?: number }
   categories: string[]
   images: string[]
+  slug?: string  // Clickable link slug derived from product name
 }
 
 export interface AgentResponse {
@@ -56,8 +57,33 @@ export interface AgentResponse {
 // ============================================================================
 
 /**
- * Detect apakah user memulai pencarian baru (kategori berbeda).
- * Rule-based detection yang cepat.
+ * Filter products to only include those that match the search query.
+ * This ensures users only see relevant products.
+ */
+function filterRelevantProducts(products: ProductItem[], searchQuery: string): ProductItem[] {
+  if (!searchQuery || products.length === 0) {
+    return products
+  }
+
+  const queryTerms = searchQuery.toLowerCase().split(/\s+/).filter(t => t.length > 2)
+
+  return products.filter(product => {
+    const productText = `${product.item_name} ${product.item_description || ''} ${product.categories?.join(' ') || ''}`.toLowerCase()
+
+    // Check if at least one query term matches the product
+    const hasMatch = queryTerms.some(term => productText.includes(term))
+
+    if (!hasMatch) {
+      console.log(`[HybridAgent] Filtering out irrelevant: "${product.item_name}"`)
+    }
+
+    return hasMatch
+  })
+}
+
+/**
+ * Detect if user is starting a new search (different category).
+ * Fast rule-based detection.
  */
 async function detectNewSearch(
   userMessage: string,
@@ -70,17 +96,35 @@ async function detectNewSearch(
 
   // Daftar kategori produk
   const categories = [
-    "sofa", "settee", "couch",
-    "meja", "table",
-    "kursi", "chair",
-    "lemari", "cabinet",
-    "rak", "shelf",
-    "buffet", "sideboard",
-    "bed", "kasur", "mattress",
-    "coffee table", "meja tamu", "meja kopi"
+    "sofas", "sectional & corner sofas", "cleopatra day beds",
+    "arm chairs", "dining chairs",
+    "dining table", "side table",
+    "coffee table", "bench",
+    "ottoman & pouf", "decorative stools",
+    "console table", "chest of drawers",
+    "buffet sideboards", "tv stand", "room dividers",
+    "beds", "headboards", "bedside nightstand",
+    "make up dressing tables", "bed benchs",
+    "bar chairs stools", "trolleys bar carts",
+    "study tables", "study chairs",
+    "bookcases", "ceiling light",
+    "floor lamp", "table lamp",
+    "vase ceramic jars", "photo frames",
+    "bowls trays", "books bookends",
+    "decor arts sculptures", "candle holders",
+    "flower arrangements", "wall arts",
+    "mirrors", "clocks",
+    "square cushions", "round cushions",
+    "rectangle cushions", "drapery fabrics",
+    "promotional fabrics", "curtains",
+    "sheer", "blackout curtains",
+    "neutral rugs", "geometric rugs",
+    "classical rugs", "art decor rugs",
+    "abstract rugs", "plain rugs",
+    "roller blinds"
   ]
 
-  // CEK 1: User menyebut kategori produk berbeda → NEW SEARCH
+  // CHECK 1: User mentions a different product category → NEW SEARCH
   for (const cat of categories) {
     if (msg.includes(cat) && !base.includes(cat)) {
       console.log(`[detectNewSearch] Different category mentioned: ${cat}`)
@@ -88,18 +132,17 @@ async function detectNewSearch(
     }
   }
 
-  // CEK 2: Intent menyebut category yang berbeda → NEW SEARCH
+  // CHECK 2: Intent has a different category → NEW SEARCH
   if (intent.filters?.category && intent.filters.category !== base) {
     console.log(`[detectNewSearch] Intent has different category: ${intent.filters.category}`)
     return true
   }
 
-  // CEK 3: Keyword pencarian baru TANPA attribute (warna/material/price)
-  // Hanya anggap new search jika user benar-benar mencari produk berbeda
+  // CHECK 3: New search keywords WITHOUT attributes (color/material/price)
+  // Only consider new search if user is truly searching for different product
   const newSearchKeywords = [
-    "cari meja", "cari kursi", "cari lemari", "cari rak", "cari bed",
-    "find table", "find chair", "find cabinet",
-    "show me", "tampilkan"
+    "find table", "find chair", "find cabinet", "find sofa", "find bed",
+    "show me", "looking for", "search for"
   ]
 
   for (const kw of newSearchKeywords) {
@@ -109,18 +152,18 @@ async function detectNewSearch(
     }
   }
 
-  // CEK 4: Jika message mengandung attribute (warna/material/price), ini CONTINUATION
-  // BUKAN new search, meskipun ada "apa ada" atau "ada"
-  const attributes = ["putih", "white", "hitam", "black", "coklat", "brown",
-    "merah", "red", "biru", "blue", "hijau", "green",
-    "kayu", "wood", "kulit", "leather", "kain", "fabric",
-    "murah", "cheap", "mahal", "expensive"]
+  // CHECK 4: If message contains attribute (color/material/price), treat as CONTINUATION
+  // NOT a new search
+  const attributes = ["white", "black", "brown",
+    "red", "blue", "green", "grey", "beige", "cream",
+    "wood", "wooden", "leather", "fabric", "metal", "glass",
+    "cheap", "expensive", "budget", "premium", "modern", "minimalist", "japandi", "scandinavian"]
 
   const hasAttribute = attributes.some(attr => msg.includes(attr))
 
   if (hasAttribute) {
     console.log(`[detectNewSearch] Has attribute, treating as continuation`)
-    return false  // Ini continuation, BUKAN new search
+    return false  // This is continuation, NOT a new search
   }
 
   console.log(`[detectNewSearch] No new search detected, treating as continuation`)
@@ -479,16 +522,22 @@ Untuk pemesanan atau tanya lebih lanjut, silakan klik produk atau hubungi CS kam
   console.log(`[HybridAgent] Generated response:`, generatedResponse)
 
   // ========================================================================
-  // STEP 7: Return Structured Response
+  // STEP 7: Return Structured Response (with filtered relevant products)
   // ========================================================================
+
+  // Filter to only include products that match the search query
+  const relevantProducts = filterRelevantProducts(searchResult.products, searchQuery)
+
+  console.log(`[HybridAgent] Final products: ${relevantProducts.length} (from ${searchResult.count})`)
+
   return {
     intro: generatedResponse.intro,
-    products: searchResult.products,
+    products: relevantProducts,
     followUp: generatedResponse.followUp,
     meta: {
-      hasProducts: searchResult.count > 0,
+      hasProducts: relevantProducts.length > 0,
       searchType: searchResult.searchType,
-      productCount: searchResult.count,
+      productCount: relevantProducts.length,
       intent: intent.intent,
       detectedLanguage: intent.language
     }
@@ -500,7 +549,7 @@ Untuk pemesanan atau tanya lebih lanjut, silakan klik produk atau hubungi CS kam
 // ============================================================================
 
 /**
- * Get conversation state untuk debugging/monitoring.
+ * Get conversation state for debugging/monitoring.
  */
 export function getConversationState(threadId: string): ConversationState | undefined {
   return stateStore.get(threadId)
@@ -515,7 +564,7 @@ export function resetConversation(threadId: string): void {
 }
 
 /**
- * Get state summary untuk debugging.
+ * Get state summary for debugging.
  */
 export function getStateSummary(threadId: string): string {
   const state = stateStore.get(threadId)

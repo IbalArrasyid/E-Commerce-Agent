@@ -28,6 +28,7 @@ export interface ProductItem {
   user_reviews?: { rating?: number; count?: number }
   categories: string[]
   images: string[]
+  slug: string  // Clickable link slug derived from product name
 }
 
 export interface SearchResult {
@@ -96,7 +97,16 @@ export class ProductSearchService {
       }
 
       // Format hasil
-      const products = this.formatProducts(filteredProducts.slice(0, n))
+      let products = this.formatProducts(filteredProducts.slice(0, n * 2)) // Get more to filter
+
+      // Apply relevance filtering to remove non-matching product types
+      // (e.g., filter out coffee table when searching for dining table)
+      products = this.filterByRelevance(products, query)
+
+      // Limit to requested count
+      products = products.slice(0, n)
+
+      console.log(`[ProductSearch] After relevance filter: ${products.length} products`)
 
       return {
         products,
@@ -281,24 +291,109 @@ export class ProductSearchService {
   }
 
   /**
+   * Generate slug from product name for clickable links.
+   */
+  private generateSlug(name: string): string {
+    return name
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, '')  // Remove special characters
+      .replace(/\s+/g, '-')           // Replace spaces with hyphens
+      .replace(/-+/g, '-')            // Remove multiple hyphens
+      .trim()
+  }
+
+  /**
    * Format produk ke standard output.
    */
   private formatProducts(rawProducts: any[]): ProductItem[] {
     return rawProducts
       .map((item: any) => {
         const data = item[0]?.metadata || item.metadata || item
+        const itemName = data.item_name || ''
         return {
           item_id: data.item_id,
-          item_name: data.item_name,
+          item_name: itemName,
           item_description: data.item_description,
           brand: data.brand,
           prices: data.prices || [],
           user_reviews: data.user_reviews,
           categories: data.categories || [],
-          images: data.images || []
+          images: data.images || [],
+          slug: this.generateSlug(itemName)  // Generate clickable slug
         }
       })
       .filter(p => p.item_id) // Filter invalid products
+  }
+
+  /**
+   * Filter products by relevance to the search query.
+   * This ensures only products matching the specific type are returned.
+   * E.g., when searching for "dining table", filter out "coffee table", "console table", etc.
+   */
+  private filterByRelevance(products: ProductItem[], query: string): ProductItem[] {
+    const queryLower = query.toLowerCase()
+
+    // Define product type patterns that should be mutually exclusive
+    const productTypePatterns = [
+      { type: 'dining table', matchTerms: ['dining table', 'dining tables', 'meja makan'], excludeTerms: ['coffee', 'console', 'side', 'end', 'bedside', 'vanity'] },
+      { type: 'coffee table', matchTerms: ['coffee table', 'coffee tables', 'meja tamu', 'meja kopi'], excludeTerms: ['dining', 'console', 'side', 'end'] },
+      { type: 'console table', matchTerms: ['console table', 'console tables', 'meja konsol'], excludeTerms: ['dining', 'coffee', 'side', 'end'] },
+      { type: 'side table', matchTerms: ['side table', 'side tables', 'meja samping'], excludeTerms: ['dining', 'coffee', 'console'] },
+      { type: 'end table', matchTerms: ['end table', 'end tables'], excludeTerms: ['dining', 'coffee', 'console'] },
+      { type: 'bedside table', matchTerms: ['bedside table', 'bedside tables', 'nightstand', 'meja nakas'], excludeTerms: ['dining', 'coffee', 'console'] },
+      { type: 'dining chair', matchTerms: ['dining chair', 'dining chairs', 'kursi makan'], excludeTerms: ['office', 'lounge', 'arm', 'accent'] },
+      { type: 'office chair', matchTerms: ['office chair', 'office chairs', 'kursi kantor'], excludeTerms: ['dining', 'lounge', 'arm'] },
+      { type: 'lounge chair', matchTerms: ['lounge chair', 'lounge chairs', 'accent chair'], excludeTerms: ['dining', 'office'] },
+      { type: 'sofa', matchTerms: ['sofa', 'sofas', 'couch'], excludeTerms: [] },
+      { type: 'sectional', matchTerms: ['sectional', 'sectionals'], excludeTerms: [] },
+    ]
+
+    // Find which product type the user is searching for
+    let matchedPattern: typeof productTypePatterns[0] | null = null
+    for (const pattern of productTypePatterns) {
+      if (pattern.matchTerms.some(term => queryLower.includes(term))) {
+        matchedPattern = pattern
+        console.log(`[ProductSearch] Detected product type: "${pattern.type}"`)
+        break
+      }
+    }
+
+    // If no specific pattern matched, return all products
+    if (!matchedPattern || matchedPattern.excludeTerms.length === 0) {
+      return products
+    }
+
+    // Filter products to only include those that match the type and exclude others
+    const filtered = products.filter(product => {
+      const productName = product.item_name.toLowerCase()
+
+      // Check if product matches the searched type (e.g., "dining" for dining table)
+      const searchedTypeKeyword = matchedPattern!.matchTerms[0].split(' ')[0] // "dining", "coffee", etc.
+      const matchesSearchedType = new RegExp(`\\b${searchedTypeKeyword}\\b`, 'i').test(productName)
+
+      // Check if product contains excluded terms as WHOLE WORDS (not substrings)
+      // Using word boundary regex to avoid "Sendai" matching "end"
+      const hasExcludedTerm = matchedPattern!.excludeTerms.some(term => {
+        const wordBoundaryRegex = new RegExp(`\\b${term}\\b`, 'i')
+        return wordBoundaryRegex.test(productName)
+      })
+
+      // If product matches searched type, keep it
+      if (matchesSearchedType) {
+        return true
+      }
+
+      // If product has an excluded term as a whole word, filter it out
+      if (hasExcludedTerm) {
+        console.log(`[ProductSearch] Filtering out: "${product.item_name}" (has excluded term)`)
+        return false
+      }
+
+      return true
+    })
+
+    console.log(`[ProductSearch] Relevance filter: ${products.length} -> ${filtered.length} products`)
+    return filtered
   }
 
   /**

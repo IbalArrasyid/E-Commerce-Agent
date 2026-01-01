@@ -53,6 +53,7 @@ export interface ProductItem {
   user_reviews?: { rating?: number; count?: number }
   categories: string[]
   images: string[]
+  slug?: string  // Clickable link slug derived from product name
 }
 
 // ============================================================================
