@@ -1,5 +1,5 @@
 // Import Google's Gemini embeddings for vector creation
-import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai"
+import { ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings } from "@langchain/google-genai"
 // Import MongoDB client for database connection
 import { MongoClient } from "mongodb"
 // Import MongoDB Atlas vector search for storing and searching embeddings
@@ -15,9 +15,8 @@ import "dotenv/config"
 // Create MongoDB client instance using connection string from environment variables
 const client = new MongoClient(process.env.MONGODB_ATLAS_URI as string)
 
-<<<<<<< HEAD
+
 // Define schema for furniture item structure using Zod validation (matching products_enriched.json)
-=======
 // Initialize Google Gemini chat model for generating synthetic furniture data
 const llm = new ChatGoogleGenerativeAI({
   model: "gemini-2.5-flash",  // Use Gemini 2.5 Flash model
@@ -26,7 +25,6 @@ const llm = new ChatGoogleGenerativeAI({
 })
 
 // Define schema for furniture item structure using Zod validation
->>>>>>> 65e9c20049a10c65392dc9f0a9849e4eb60c2622
 const itemSchema = z.object({
   item_id: z.string(),                    // Unique identifier for the item
   item_name: z.string(),                  // Name of the furniture item
@@ -74,13 +72,13 @@ async function loadProductsFromJson(): Promise<Item[]> {
 // Function to create database and collection before seeding
 async function setupDatabaseAndCollection(): Promise<void> {
   console.log("Setting up database and collection...")
-  
+
   // Get reference to the admin_db database
   const db = client.db("admin_db")
-  
+
   // Create the items collection if it doesn't exist
   const collections = await db.listCollections({ name: "items" }).toArray()
-  
+
   if (collections.length === 0) {
     await db.createCollection("items")
     console.log("Created 'items' collection in 'admin_db' database")
@@ -160,7 +158,7 @@ async function seedDatabase(): Promise<void> {
 
     // Setup database and collection
     await setupDatabaseAndCollection()
-    
+
     // Create vector search index
     await createVectorSearchIndex()
 
@@ -180,10 +178,10 @@ async function seedDatabase(): Promise<void> {
     const recordsWithSummaries = await Promise.all(
       productData.map(async (record) => ({
         pageContent: await createItemSummary(record),  // Create searchable summary
-        metadata: {...record},                         // Preserve original item data
+        metadata: { ...record },                         // Preserve original item data
       }))
     )
-    
+
     // Store each record with vector embeddings in MongoDB
     for (const record of recordsWithSummaries) {
       // Create vector embeddings and store in MongoDB Atlas using Google embeddings

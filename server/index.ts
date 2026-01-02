@@ -61,7 +61,7 @@ async function startServer() {
     // Establish connection to MongoDB Atlas
     await client.connect()
     // Ping MongoDB to verify connection is working
-    await client.db("admin").command({ ping: 1 })
+    await client.db("db_admin").command({ ping: 1 })
     // Log successful connection
     console.log("You successfully connected to MongoDB!")
 

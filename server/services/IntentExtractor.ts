@@ -30,6 +30,7 @@ export const IntentSchema = z.object({
     "greeting",      // Sapaan
     "help",          // Minta bantuan
     "faq_info",      // Pertanyaan umum (lokasi, jam buka, kontak, dll)
+    "context_query", // Query about previous product ("this one", "that")
     "unknown"        // Tidak jelas
   ]),
 
@@ -46,6 +47,15 @@ export const IntentSchema = z.object({
   price_min: z.number().nullable(),
   price_max: z.number().nullable(),
   brand: z.string().nullable(),
+
+  // NEW: Preference extraction fields
+  size_preference: z.enum(["small", "medium", "large"]).nullable(),
+  style_preference: z.enum(["warm", "minimalist", "modern", "classic", "scandinavian", "japandi"]).nullable(),
+  room_type: z.string().nullable(),
+
+  // NEW: Context reference detection
+  context_reference: z.boolean().nullable(),  // True if user refers to "this one", "that", etc.
+  color_variant_query: z.boolean().nullable(), // True if asking for different color of same product
 
   // Language detection (REQUIRED)
   language: z.enum(["id", "en"])
@@ -77,6 +87,24 @@ export const IntentSchema = z.object({
 
   if (Object.keys(filters).length > 0) {
     result.filters = filters
+  }
+
+  // NEW: Preferences
+  const preferences: any = {}
+  if (data.size_preference) preferences.size = data.size_preference
+  if (data.style_preference) preferences.style = data.style_preference
+  if (data.room_type) preferences.room_type = data.room_type
+
+  if (Object.keys(preferences).length > 0) {
+    result.preferences = preferences
+  }
+
+  // NEW: Context flags
+  if (data.context_reference) {
+    result.context_reference = data.context_reference
+  }
+  if (data.color_variant_query) {
+    result.color_variant_query = data.color_variant_query
   }
 
   return result
@@ -207,7 +235,17 @@ INTENT TYPES:
 - greeting: Hi, hello, halo
 - help: User needs help
 - faq_info: General questions NOT about products (lokasi toko, jam buka, kontak, pengiriman, pembayaran, garansi, dll)
+- context_query: User refers to previous product ("this one", "that", "yang tadi", "is there a darker color for this")
 - unknown: Cannot determine
+
+CONTEXT REFERENCE DETECTION:
+- Set context_reference: true if user uses words like "this", "that", "this one", "yang ini", "yang tadi", "for this"
+- Set color_variant_query: true if user asks about different colors of same product ("darker color", "lighter", "warna lain")
+
+PREFERENCES EXTRACTION:
+- size_preference: "small" if user mentions small/kecil/compact, "large" for big/besar, null otherwise
+- style_preference: "warm", "minimalist", "modern", "classic", "scandinavian", "japandi"
+- room_type: living room, bedroom, dining room, office, etc.
 
 FAQ TOPICS (for faq_info intent):
 - location: Pertanyaan tentang lokasi/alamat toko
@@ -220,7 +258,7 @@ FAQ TOPICS (for faq_info intent):
 
 OUTPUT FORMAT (ALL FIELDS REQUIRED, use null for empty):
 {
-  "intent": "search" | "filter_add" | "filter_clear" | "greeting" | "help" | "faq_info" | "unknown",
+  "intent": "search" | "filter_add" | "filter_clear" | "greeting" | "help" | "faq_info" | "context_query" | "unknown",
   "search_query": "clean search query" | null,
   "faq_topic": "location" | "hours" | "contact" | "shipping" | "payment" | "warranty" | "other" | null,
   "category": "sofa" | null,
@@ -229,6 +267,11 @@ OUTPUT FORMAT (ALL FIELDS REQUIRED, use null for empty):
   "price_min": 0 | null,
   "price_max": 1000000 | null,
   "brand": "IKEA" | null,
+  "size_preference": "small" | "medium" | "large" | null,
+  "style_preference": "warm" | "minimalist" | "modern" | "classic" | null,
+  "room_type": "living room" | null,
+  "context_reference": true | false | null,
+  "color_variant_query": true | false | null,
   "language": "id" | "en"
 }`
 
