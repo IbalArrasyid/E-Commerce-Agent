@@ -1,49 +1,38 @@
 /**
- * LANGGRAPH AGENT WITH AGENTIC REASONING
- *
- * Multi-node graph architecture for:
- * 1. Intent extraction + preference detection
- * 2. Preference management across turns
- * 3. RAG-based product search
- * 4. Context-aware response generation
- *
- * Flow: User Message → Intent Node → [Preference Node] → Search Node → Response Node
+ * DEKO - ReAct Design Partner Agent
+ * 
+ * Architecture: Cyclic Graph with Tool-Calling LLM
+ * 
+ * Flow: Start → Enricher → Agent ←→ Tools → End
+ * 
+ * The agent is an interior design consultant that:
+ * 1. Analyzes user context (room size, style, budget)
+ * 2. Provides design consultation and advice
+ * 3. Searches products when relevant
+ * 4. Never hallucinates - only mentions products from search results
  */
 
-import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai"
+import { StateGraph, Annotation, END, START } from "@langchain/langgraph"
+import { ToolNode } from "@langchain/langgraph/prebuilt"
 import { ChatOpenAI } from "@langchain/openai"
-import { AIMessage, BaseMessage, HumanMessage } from "@langchain/core/messages"
-import { ChatPromptTemplate, MessagesPlaceholder } from "@langchain/core/prompts"
-import { StateGraph, Annotation, END } from "@langchain/langgraph"
+import { AIMessage, BaseMessage, HumanMessage, ToolMessage } from "@langchain/core/messages"
 import { MongoDBSaver } from "@langchain/langgraph-checkpoint-mongodb"
 import { MongoClient } from "mongodb"
 import "dotenv/config"
 
-// Import services
-import { intentExtractor, type Intent } from "./services/IntentExtractor"
-import {
-  preferenceManager,
-  type UserPreferences,
-  type ConversationContext,
-  type PreferenceUpdate
-} from "./services/PreferenceManager"
-import { createProductSearchService } from "./services/ProductSearch"
-import { responseGenerator } from "./services/ResponseGenerator"
+import { createProductSearchTool, type ProductItem } from "./services/tools/productSearchTool"
 
 // ============================================================================
 // TYPE DEFINITIONS
 // ============================================================================
 
-export interface ProductItem {
-  item_id: string
-  item_name: string
-  item_description: string
-  brand: string
-  prices: Array<{ variant?: string; price: number; currency?: string }>
-  user_reviews?: { rating?: number; count?: number }
-  categories: string[]
-  images: string[]
-  slug?: string
+export interface UserProfile {
+  stylePreference?: string[]      // ["Minimalist", "Japandi"]
+  budgetRange?: { min?: number; max?: number }
+  roomDimensions?: string         // "3x3 meters"
+  constraints?: string[]          // ["cat owner", "small apartment"]
+  preferredMaterials?: string[]
+  preferredColors?: string[]
 }
 
 export interface AgentResponse {
@@ -56,338 +45,326 @@ export interface AgentResponse {
     productCount: number
     intent?: string
     detectedLanguage?: string
-    reasoning?: string  // Agent's reasoning trace
   }
 }
 
 // ============================================================================
-// STATE DEFINITION (LangGraph Annotation)
+// STATE DEFINITION
 // ============================================================================
 
 const AgentState = Annotation.Root({
-  // Message history
+  // Message history (accumulates)
   messages: Annotation<BaseMessage[]>({
     reducer: (x, y) => x.concat(y)
   }),
 
-  // Current user message
-  userMessage: Annotation<string>({
-    reducer: (_, y) => y
-  }),
-
-  // Extracted intent
-  intent: Annotation<Intent | null>({
-    reducer: (_, y) => y
-  }),
-
-  // User preferences (persisted across turns)
-  preferences: Annotation<UserPreferences>({
-    reducer: (existing, updates) => {
-      if (!updates || Object.keys(updates).length === 0) return existing || {}
-      // Merge updates into existing preferences
-      return { ...(existing || {}), ...updates }
+  // User profile with smart merge for arrays
+  userProfile: Annotation<UserProfile>({
+    reducer: (current, update) => {
+      if (!update || Object.keys(update).length === 0) return current || {}
+      return {
+        ...current,
+        ...update,
+        // Merge arrays (deduplicated)
+        stylePreference: [...new Set([
+          ...(current?.stylePreference || []),
+          ...(update.stylePreference || [])
+        ])],
+        constraints: [...new Set([
+          ...(current?.constraints || []),
+          ...(update.constraints || [])
+        ])],
+        preferredMaterials: [...new Set([
+          ...(current?.preferredMaterials || []),
+          ...(update.preferredMaterials || [])
+        ])],
+        preferredColors: [...new Set([
+          ...(current?.preferredColors || []),
+          ...(update.preferredColors || [])
+        ])]
+      }
     }
   }),
 
-  // Conversation context (for "this one" references)
-  context: Annotation<ConversationContext>({
-    reducer: (_, y) => y
+  // Active products from last search (for UI carousel)
+  activeProducts: Annotation<ProductItem[]>({
+    reducer: (current, newProducts) => newProducts ?? current ?? []
   }),
 
-  // Search results
-  searchResults: Annotation<ProductItem[]>({
-    reducer: (_, y) => y
-  }),
-
-  // Response (final output)
-  response: Annotation<AgentResponse | null>({
-    reducer: (_, y) => y
-  }),
-
-  // Language
+  // Language preference
   language: Annotation<"id" | "en">({
-    reducer: (existing, y) => y ?? existing ?? "en"
-  }),
-
-  // Reasoning trace
-  reasoning: Annotation<string[]>({
-    reducer: (x, y) => [...(x || []), ...(y || [])]
+    reducer: (current, update) => update ?? current ?? "en"
   })
 })
 
 type AgentStateType = typeof AgentState.State
 
 // ============================================================================
-// GRAPH NODES
+// SYSTEM PROMPT - DEKO PERSONA
 // ============================================================================
 
-/**
- * Intent Node: Extract user intent and update preferences
- */
-async function intentNode(state: AgentStateType): Promise<Partial<AgentStateType>> {
-  const userMessage = state.userMessage
-  const existingPrefs = state.preferences || {}
-  const context = state.context || { lastRecommendedProducts: [], turnCount: 0 }
+const SYSTEM_PROMPT = `You are "Deko", a Senior Interior Designer and furniture consultant at Home Decor Indonesia.
 
-  console.log(`[IntentNode] Processing: "${userMessage}"`)
-  console.log(`[IntentNode] Existing preferences:`, existingPrefs)
+CORE IDENTITY:
+- Warm, approachable, and knowledgeable
+- You help customers find the perfect furniture for their homes
+- You give honest, practical design advice
 
-  // Extract intent using IntentExtractor
-  const intent = await intentExtractor.extract(userMessage, {
-    currentCategory: existingPrefs.category,
-    activeFilters: existingPrefs,
-    lastQuery: context.lastSearchQuery
-  })
+BEHAVIOR RULES:
+1. **Analyze First**: When a customer describes their needs, understand their:
+   - Room size and layout
+   - Style preferences (Japandi, Minimalist, Modern, etc.)
+   - Budget constraints
+   - Any special needs (kids, pets, small apartment)
 
-  console.log(`[IntentNode] Extracted intent:`, intent)
+2. **Consult + Recommend**: Never just dump product links. Explain WHY something fits.
+   Example: "For small rooms, I recommend raised-leg sofas to create a sense of space. Let me find some options..."
 
-  // Build preference updates from intent
-  const prefUpdates: PreferenceUpdate = {}
+3. **ALWAYS Use Tools for Products**: 
+   - Call 'search_products' before mentioning ANY specific products
+   - NEVER invent or hallucinate product names/prices
+   - If search returns empty, admit it honestly: "Sorry, we don't have that in stock right now."
 
-  if (intent.filters?.color) prefUpdates.color = intent.filters.color
-  if (intent.filters?.price_max) prefUpdates.budget_max = intent.filters.price_max
-  if (intent.filters?.price_min) prefUpdates.budget_min = intent.filters.price_min
-  if (intent.filters?.category) prefUpdates.category = intent.filters.category
+4. **Be Conversational**: 
+   - Ask clarifying questions when needed
+   - Remember context from earlier in the conversation
+   - It's okay to just chat if the user wants to discuss ideas
 
-  // Extract additional preferences from message
-  const sizeFromMessage = preferenceManager.detectSizeFromMessage(userMessage)
-  if (sizeFromMessage) prefUpdates.size = sizeFromMessage
+DESIGN KNOWLEDGE:
+- **Japandi**: Blend of Japanese minimalism and Scandinavian warmth. Natural wood + neutral colors.
+- **Minimalist**: Clean lines, uncluttered, functional. Less is more.
+- **Scandinavian**: Light wood, cozy textiles, bright and airy.
+- **Industrial**: Metal accents, raw textures, exposed elements.
+- **Classic**: Timeless elegance, rich woods, traditional craftsmanship.
 
-  const roomFromMessage = preferenceManager.detectRoomFromMessage(userMessage)
-  if (roomFromMessage) prefUpdates.roomType = roomFromMessage
+- **Teak wood**: Excellent for Indonesian climate (humidity resistant)
+- **Leather**: Durable, gets better with age, easy to clean
+- **Fabric**: Comfortable, more color options, needs more care
 
-  // Handle style from intent preferences
-  if (intent.preferences?.style) {
-    prefUpdates.style = intent.preferences.style as UserPreferences["style"]
+RESPONSE FORMATTING:
+- Keep responses concise but helpful (2-3 paragraphs max)
+- Be persuasive but honest
+- When showing products, explain briefly why each one fits
+- Use Indonesian Rupiah for prices (Rp)
+
+CURRENT USER PROFILE:
+{userProfile}
+`
+
+// ============================================================================
+// CONTEXT ENRICHER NODE
+// ============================================================================
+
+async function enricherNode(state: AgentStateType): Promise<Partial<AgentStateType>> {
+  const lastMessage = state.messages[state.messages.length - 1]
+
+  // Only process human messages
+  if (lastMessage._getType() !== "human") {
+    return {}
   }
 
-  // Reasoning trace
-  const reasoning: string[] = []
-  reasoning.push(`Intent detected: ${intent.intent}`)
-  if (Object.keys(prefUpdates).length > 0) {
-    reasoning.push(`Preferences extracted: ${JSON.stringify(prefUpdates)}`)
+  const content = typeof lastMessage.content === "string"
+    ? lastMessage.content
+    : JSON.stringify(lastMessage.content)
+
+  const msgLower = content.toLowerCase()
+
+  console.log(`[Enricher] Processing: "${content}"`)
+
+  // Extract profile updates (rule-based for speed)
+  const updates: UserProfile = {}
+
+  // Style detection
+  const styles: Record<string, string> = {
+    "japandi": "Japandi",
+    "minimalist": "Minimalist",
+    "minimalis": "Minimalist",
+    "scandinavian": "Scandinavian",
+    "industrial": "Industrial",
+    "klasik": "Classic",
+    "classic": "Classic",
+    "modern": "Modern",
+    "contemporary": "Contemporary"
+  }
+
+  for (const [key, value] of Object.entries(styles)) {
+    if (msgLower.includes(key)) {
+      updates.stylePreference = [value]
+      console.log(`[Enricher] Detected style: ${value}`)
+      break
+    }
+  }
+
+  // Room dimension detection
+  const dimensionMatch = content.match(/(\d+)\s*[xX×]\s*(\d+)\s*(m|meter|meters)?/)
+  if (dimensionMatch) {
+    updates.roomDimensions = `${dimensionMatch[1]}x${dimensionMatch[2]}m`
+    console.log(`[Enricher] Detected dimensions: ${updates.roomDimensions}`)
+  }
+
+  // Budget detection (IDR)
+  const budgetMatch = content.match(/(?:budget|harga|maksimal?|under|dibawah|sekitar)\s*(?:rp\.?|rupiah)?\s*(\d+(?:[.,]\d+)?)\s*(jt|juta|rb|ribu|k|m)?/i)
+  if (budgetMatch) {
+    let amount = parseFloat(budgetMatch[1].replace(',', '.'))
+    const unit = budgetMatch[2]?.toLowerCase()
+    if (unit === 'jt' || unit === 'juta' || unit === 'm') amount *= 1000000
+    if (unit === 'rb' || unit === 'ribu' || unit === 'k') amount *= 1000
+    updates.budgetRange = { max: amount }
+    console.log(`[Enricher] Detected budget max: ${amount}`)
+  }
+
+  // Color preferences
+  const colors = ["putih", "white", "hitam", "black", "coklat", "brown", "abu", "grey", "gray",
+    "cream", "beige", "biru", "blue", "hijau", "green", "merah", "red"]
+  for (const color of colors) {
+    if (msgLower.includes(color)) {
+      updates.preferredColors = [color]
+      console.log(`[Enricher] Detected color: ${color}`)
+      break
+    }
+  }
+
+  // Material preferences
+  const materials: Record<string, string> = {
+    "kayu": "wood", "teak": "teak", "jati": "teak",
+    "kulit": "leather", "leather": "leather",
+    "kain": "fabric", "fabric": "fabric",
+    "rotan": "rattan", "rattan": "rattan",
+    "metal": "metal", "besi": "metal"
+  }
+
+  for (const [key, value] of Object.entries(materials)) {
+    if (msgLower.includes(key)) {
+      updates.preferredMaterials = [value]
+      console.log(`[Enricher] Detected material: ${value}`)
+      break
+    }
+  }
+
+  // Constraints detection
+  if (msgLower.includes("kecil") || msgLower.includes("small") || msgLower.includes("sempit")) {
+    updates.constraints = ["small space"]
+  }
+  if (msgLower.includes("kucing") || msgLower.includes("cat") || msgLower.includes("anjing") || msgLower.includes("dog")) {
+    updates.constraints = [...(updates.constraints || []), "pet owner"]
+  }
+  if (msgLower.includes("anak") || msgLower.includes("kid") || msgLower.includes("child")) {
+    updates.constraints = [...(updates.constraints || []), "has children"]
+  }
+
+  // Language detection
+  const isIndonesian = /\b(apa|ada|saya|mau|cari|tolong|halo|hai|boleh|bisa|bagus|mencari|gimana|dong)\b/i.test(content)
+
+  if (Object.keys(updates).length > 0) {
+    console.log(`[Enricher] Profile updates:`, updates)
   }
 
   return {
-    intent,
-    preferences: prefUpdates,
-    language: intent.language,
-    reasoning
+    userProfile: Object.keys(updates).length > 0 ? updates : undefined,
+    language: isIndonesian ? "id" : "en"
   }
 }
 
-/**
- * Context Node: Handle context references ("this one", etc.)
- */
-async function contextNode(state: AgentStateType): Promise<Partial<AgentStateType>> {
-  const intent = state.intent
-  const context = state.context || { lastRecommendedProducts: [], turnCount: 0 }
-  const userMessage = state.userMessage
-
-  const reasoning: string[] = []
-
-  // Check for context reference
-  if (intent?.context_reference || intent?.color_variant_query) {
-    const variantInfo = preferenceManager.detectColorVariantQuery(userMessage, context)
-
-    if (variantInfo.isVariantQuery && variantInfo.requestedColor) {
-      reasoning.push(`Detected color variant query for "${variantInfo.baseProduct}"`)
-      reasoning.push(`Requested color: ${variantInfo.requestedColor}`)
-
-      // Update preferences with the new color request
-      return {
-        preferences: { color: variantInfo.requestedColor },
-        reasoning
-      }
-    }
-
-    // Try to resolve basic context reference
-    const resolved = preferenceManager.resolveContextReference(context, userMessage)
-    if (resolved) {
-      reasoning.push(`Resolved context reference to product: ${resolved.item_name}`)
-    }
-  }
-
-  return { reasoning }
-}
-
-/**
- * Search Node: Perform RAG search using ProductSearchService
- */
-async function searchNode(
-  state: AgentStateType,
-  client: MongoClient
-): Promise<Partial<AgentStateType>> {
-  const intent = state.intent
-  const preferences = state.preferences || {}
-
-  const reasoning: string[] = []
-
-  // Skip search for non-search intents
-  if (!intent || !["search", "context_query", "filter_add"].includes(intent.intent)) {
-    reasoning.push(`Skipping search - intent is "${intent?.intent}"`)
-    return { searchResults: [], reasoning }
-  }
-
-  // Build search query
-  let searchQuery = intent.search_query || ""
-
-  // If no search query but we have category, use that
-  if (!searchQuery && preferences.category) {
-    searchQuery = preferences.category
-  }
-
-  // Add style/room context to query for better semantic search
-  if (preferences.style) {
-    searchQuery = `${searchQuery} ${preferences.style}`.trim()
-  }
-  if (preferences.roomType) {
-    searchQuery = `${searchQuery} for ${preferences.roomType}`.trim()
-  }
-
-  reasoning.push(`Search query: "${searchQuery}"`)
-
-  // Build filters from preferences
-  const filters = preferenceManager.buildSearchFilters(preferences)
-  reasoning.push(`Filters applied: ${JSON.stringify(filters)}`)
-
-  // Perform search
-  const productSearch = createProductSearchService(client)
-  const searchResult = await productSearch.search({
-    query: searchQuery,
-    n: 10,
-    filters,
-    searchType: "auto"
-  })
-
-  console.log(`[SearchNode] Found ${searchResult.count} products`)
-  reasoning.push(`Found ${searchResult.count} products via ${searchResult.searchType} search`)
-
-  // Update context with recommended products
-  const updatedContext: ConversationContext = {
-    lastRecommendedProducts: searchResult.products.slice(0, 5).map(p => ({
-      item_id: p.item_id,
-      item_name: p.item_name,
-      category: p.categories?.[0]
-    })),
-    lastCategory: preferences.category,
-    lastSearchQuery: searchQuery,
-    turnCount: (state.context?.turnCount || 0) + 1
-  }
-
-  return {
-    searchResults: searchResult.products,
-    context: updatedContext,
-    reasoning
-  }
-}
-
-/**
- * Response Node: Generate natural language response
- */
-async function responseNode(state: AgentStateType): Promise<Partial<AgentStateType>> {
-  const intent = state.intent
-  const searchResults = state.searchResults || []
-  const preferences = state.preferences || {}
-  const language = state.language || "en"
-
-  const reasoning: string[] = []
-
-  // Generate response using ResponseGenerator
-  const generatedResponse = await responseGenerator.generate({
-    language,
-    hasProducts: searchResults.length > 0,
-    productCount: searchResults.length,
-    products: searchResults,
-    searchQuery: state.context?.lastSearchQuery,
-    activeFilters: preferences,
-    intent: intent?.intent,
-    faqTopic: intent?.faq_topic
-  })
-
-  reasoning.push(`Generated response with ${searchResults.length} products`)
-
-  // Build final response
-  const response: AgentResponse = {
-    intro: generatedResponse.intro,
-    products: searchResults.slice(0, 5),
-    followUp: generatedResponse.followUp,
-    meta: {
-      hasProducts: searchResults.length > 0,
-      searchType: searchResults.length > 0 ? "vector" : "none",
-      productCount: searchResults.length,
-      intent: intent?.intent,
-      detectedLanguage: language,
-      reasoning: state.reasoning?.join(" → ")
-    }
-  }
-
-  return { response, reasoning }
-}
 
 // ============================================================================
 // ROUTER FUNCTION
 // ============================================================================
 
-function routeByIntent(state: AgentStateType): string {
-  const intent = state.intent
+function routeAfterAgent(state: AgentStateType): string {
+  const lastMessage = state.messages[state.messages.length - 1]
 
-  if (!intent) {
-    return "response"
+  // Check if the last message has tool calls
+  if (lastMessage._getType() === "ai") {
+    const aiMessage = lastMessage as AIMessage
+    if (aiMessage.tool_calls && aiMessage.tool_calls.length > 0) {
+      console.log(`[Router] Agent requested tool calls, routing to tools`)
+      return "tools"
+    }
   }
 
-  switch (intent.intent) {
-    case "greeting":
-    case "help":
-    case "faq_info":
-      // Skip search for these intents
-      return "response"
-
-    case "context_query":
-      // Handle context reference first
-      return "context"
-
-    case "search":
-    case "filter_add":
-    default:
-      // Go to search node
-      return "search"
-  }
+  console.log(`[Router] No tool calls, ending`)
+  return END
 }
 
 // ============================================================================
 // MAIN AGENT FUNCTION
 // ============================================================================
 
+// Global tool instance (will be initialized on first call)
+let productSearchToolInstance: ReturnType<typeof createProductSearchTool> | null = null
+
 export async function callAgent(
   client: MongoClient,
   query: string,
   thread_id: string
 ): Promise<AgentResponse> {
-  console.log(`\n[Agent] Processing message for thread ${thread_id}`)
-  console.log(`[Agent] User message: "${query}"`)
+  console.log(`\n[Deko] ============= NEW REQUEST =============`)
+  console.log(`[Deko] Thread: ${thread_id}`)
+  console.log(`[Deko] Query: "${query}"`)
 
   try {
     const dbName = "admin_db"
 
-    // Build the graph
-    const workflow = new StateGraph(AgentState)
-      // Add nodes
-      .addNode("intent", intentNode)
-      .addNode("context", contextNode)
-      .addNode("search", async (state) => searchNode(state, client))
-      .addNode("response", responseNode)
+    // Initialize product search tool (with side-effect storage)
+    if (!productSearchToolInstance) {
+      productSearchToolInstance = createProductSearchTool(client)
+    }
+    productSearchToolInstance.clearResults()
 
-      // Define edges
-      .addEdge("__start__", "intent")
-      .addConditionalEdges("intent", routeByIntent, {
-        response: "response",
-        context: "context",
-        search: "search"
+    const tools = [productSearchToolInstance.tool]
+
+    // Create model with tools bound
+    const model = new ChatOpenAI({
+      apiKey: process.env.GROQ_API_KEY,
+      model: "llama-3.3-70b-versatile",
+      temperature: 0.7,
+      configuration: {
+        baseURL: "https://api.groq.com/openai/v1",
+      },
+    }).bindTools(tools)
+
+    // Create tool node
+    const toolNode = new ToolNode(tools)
+
+    // Local agent node that captures model in closure
+    const localAgentNode = async (state: AgentStateType): Promise<Partial<AgentStateType>> => {
+      console.log(`[Agent] Processing, message count: ${state.messages.length}`)
+
+      const profileStr = JSON.stringify(state.userProfile || {}, null, 2)
+      const systemPrompt = SYSTEM_PROMPT.replace("{userProfile}", profileStr)
+
+      const response = await model.invoke([
+        { role: "system", content: systemPrompt },
+        ...state.messages
+      ])
+
+      console.log(`[Agent] Response type: ${response._getType()}`)
+      console.log(`[Agent] Has tool calls: ${(response as any).tool_calls?.length > 0}`)
+
+      return { messages: [response] }
+    }
+
+    // Build the cyclic graph
+    const workflow = new StateGraph(AgentState)
+      // Nodes
+      .addNode("enricher", enricherNode)
+      .addNode("agent", localAgentNode)
+      .addNode("tools", toolNode)
+
+      // Entry point
+      .addEdge(START, "enricher")
+
+      // Enricher -> Agent
+      .addEdge("enricher", "agent")
+
+      // Agent -> Tools or End (conditional)
+      .addConditionalEdges("agent", routeAfterAgent, {
+        tools: "tools",
+        [END]: END
       })
-      .addEdge("context", "search")
-      .addEdge("search", "response")
-      .addEdge("response", END)
+
+      // Tools -> Agent (loop back for re-reasoning)
+      .addEdge("tools", "agent")
 
     // Initialize checkpointer for conversation memory
     const checkpointer = new MongoDBSaver({ client, dbName })
@@ -398,50 +375,92 @@ export async function callAgent(
     // Execute the graph
     const finalState = await app.invoke(
       {
-        userMessage: query,
-        messages: [new HumanMessage(query)]
+        messages: [new HumanMessage(query)],
+        userProfile: {},
+        activeProducts: []
       },
       {
         configurable: { thread_id }
       }
     )
 
-    console.log(`[Agent] Final reasoning:`, finalState.reasoning)
-    console.log(`[Agent] Final preferences:`, finalState.preferences)
+    console.log(`[Deko] Final state - messages: ${finalState.messages.length}`)
+    console.log(`[Deko] User profile:`, finalState.userProfile)
 
-    // Return the response
-    if (finalState.response) {
-      return finalState.response
-    }
+    // Extract the final AI response
+    const lastAiMessage = [...finalState.messages]
+      .reverse()
+      .find(m => m._getType() === "ai" && !(m as any).tool_calls?.length)
 
-    // Fallback response
+    const responseText = lastAiMessage?.content?.toString() || "I apologize, could you please rephrase that?"
+
+    // Get products from tool side-effect
+    const products = productSearchToolInstance.getLastResults()
+
+    console.log(`[Deko] Products found: ${products.length}`)
+
+    // Parse response into intro and followUp
+    const { intro, followUp } = parseResponse(responseText)
+
     return {
-      intro: "I apologize, but I couldn't process your request. Could you please rephrase?",
-      products: [],
-      followUp: "What are you looking for today?",
+      intro,
+      products,
+      followUp,
       meta: {
-        hasProducts: false,
-        searchType: "none",
-        productCount: 0
+        hasProducts: products.length > 0,
+        searchType: products.length > 0 ? "vector" : "none",
+        productCount: products.length,
+        intent: "react_agent",
+        detectedLanguage: finalState.language
       }
     }
 
   } catch (error: any) {
-    console.error("[Agent] Error:", error.message)
+    console.error("[Deko] Error:", error.message)
 
     if (error.status === 429) {
-      throw new Error("Service temporarily unavailable due to rate limits. Please try again in a minute.")
-    } else if (error.status === 401) {
-      throw new Error("Authentication failed. Please check your API configuration.")
-    } else {
-      throw new Error(`Agent failed: ${error.message}`)
+      throw new Error("Service temporarily unavailable. Please try again in a minute.")
     }
+
+    throw new Error(`Agent failed: ${error.message}`)
   }
 }
 
 // ============================================================================
-// UTILITY EXPORTS
+// HELPER FUNCTIONS
 // ============================================================================
 
-export { AgentState }
-export type { AgentStateType }
+function parseResponse(text: string): { intro: string; followUp: string } {
+  // Try to split response into intro and follow-up question
+  const lines = text.split('\n').filter(l => l.trim())
+
+  if (lines.length >= 2) {
+    // Check if last line is a question
+    const lastLine = lines[lines.length - 1]
+    if (lastLine.includes('?') || /^(would|could|can|shall|do|may|what|how|which|are|is)/i.test(lastLine)) {
+      return {
+        intro: lines.slice(0, -1).join('\n'),
+        followUp: lastLine
+      }
+    }
+  }
+
+  // Fallback: whole text is intro, generic follow-up
+  return {
+    intro: text,
+    followUp: "Is there anything else I can help you with?"
+  }
+}
+
+// ============================================================================
+// UTILITY EXPORTS (for API compatibility)
+// ============================================================================
+
+export function getStateSummary(threadId: string): string {
+  return `ReAct agent for thread ${threadId}`
+}
+
+export function resetConversation(threadId: string): void {
+  console.log(`[Deko] Conversation reset requested for thread ${threadId}`)
+  // Checkpointer in MongoDB handles this - state will be fresh on next call
+}

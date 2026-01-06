@@ -7,10 +7,8 @@ import { MongoClient } from "mongodb"
 // Import Zod for schema validation
 import { z } from "zod"
 // Import our custom AI agent function
-// OLD: LangGraph-based agent
-// import { callAgent } from './agent'
-// NEW: Hybrid AI + Logic agent
-import { callAgent, getStateSummary, resetConversation } from './agent-hybrid'
+// NEW: ReAct Design Partner Agent (Deko)
+import { callAgent, getStateSummary, resetConversation } from './agent'
 
 // ============================================================================
 // REQUEST VALIDATION SCHEMAS
